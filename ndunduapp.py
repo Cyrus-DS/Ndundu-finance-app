@@ -4,7 +4,7 @@ import datetime
 from fpdf import FPDF
 
 INTEREST_RATE = 0.12          # 12% annual
-COMPOUND_FREQUENCY = "monthly"  # "daily" or "monthly"
+COMPOUND_FREQUENCY = "daily"  # "daily" or "monthly"
 
 # In-memory database
 if "members" not in st.session_state:
