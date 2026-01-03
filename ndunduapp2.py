@@ -1,6 +1,6 @@
 # ==========================================
 # Member Contribution & Interest App
-# SQLite + CSV + Excel + PDF + Contribution Summary
+# SQLite + CSV + Excel + PDF + Ledger Statements
 # ==========================================
 
 import streamlit as st
@@ -89,6 +89,9 @@ def compute_totals(member_id, contributions_df):
     )
     return principal, interest, principal + interest
 
+# ==========================================
+# PDF GENERATORS
+# ==========================================
 def generate_pdf(member_id, name, principal, interest, total_value, ratio):
     pdf = FPDF()
     pdf.add_page()
@@ -105,8 +108,42 @@ def generate_pdf(member_id, name, principal, interest, total_value, ratio):
     pdf.set_font("Arial", style="B")
     pdf.cell(200, 10, "Signature: ____________________________", ln=True)
 
-    pdf_bytes = pdf.output(dest="S").encode("latin1")
-    return BytesIO(pdf_bytes)
+    return BytesIO(pdf.output(dest="S").encode("latin1"))
+
+def generate_ledger_pdf(member_id, name, ledger_df):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=11)
+
+    pdf.cell(200, 8, "Member Ledger Statement", ln=True)
+    pdf.cell(200, 8, f"Member Name: {name}", ln=True)
+    pdf.cell(200, 8, f"Member ID: {member_id}", ln=True)
+    pdf.ln(5)
+
+    pdf.set_font("Arial", style="B", size=10)
+    pdf.cell(35, 8, "Date", border=1)
+    pdf.cell(45, 8, "Principal", border=1)
+    pdf.cell(45, 8, "Interest", border=1)
+    pdf.cell(55, 8, "Total Value", border=1, ln=True)
+
+    pdf.set_font("Arial", size=10)
+
+    for _, r in ledger_df.iterrows():
+        pdf.cell(35, 8, str(r["date"]), border=1)
+        pdf.cell(45, 8, f"{r['amount']:,.2f}", border=1)
+        pdf.cell(45, 8, f"{r['Interest']:,.2f}", border=1)
+        pdf.cell(55, 8, f"{r['Total Value']:,.2f}", border=1, ln=True)
+
+    pdf.ln(5)
+    pdf.set_font("Arial", style="B", size=11)
+    pdf.cell(200, 8, f"Total Principal: {ledger_df['amount'].sum():,.2f}", ln=True)
+    pdf.cell(200, 8, f"Total Interest: {ledger_df['Interest'].sum():,.2f}", ln=True)
+    pdf.cell(200, 8, f"Grand Total: {ledger_df['Total Value'].sum():,.2f}", ln=True)
+
+    pdf.ln(10)
+    pdf.cell(200, 8, "Signature: ____________________________", ln=True)
+
+    return BytesIO(pdf.output(dest="S").encode("latin1"))
 
 # ==========================================
 # STREAMLIT UI
@@ -148,8 +185,8 @@ st.subheader("Add Contribution")
 if not members_df.empty:
     with st.form("add_contribution"):
         member_options = [
-            f"{row['member_id']} - {row['name']}"
-            for _, row in members_df.iterrows()
+            f"{r['member_id']} - {r['name']}"
+            for _, r in members_df.iterrows()
         ]
         selected = st.selectbox("Select Member", member_options)
         c_member_id, c_member_name = selected.split(" - ")
@@ -172,16 +209,12 @@ else:
     st.info("Add members first")
 
 # ------------------------------------------
-# CONTRIBUTION SUMMARY (✅ NEW)
+# CONTRIBUTION SUMMARY
 # ------------------------------------------
 st.subheader("Contribution Summary (Including Interest)")
 
 if not contributions_df.empty:
-    summary = contributions_df.merge(
-        members_df,
-        on="member_id",
-        how="left"
-    )
+    summary = contributions_df.merge(members_df, on="member_id", how="left")
 
     summary["Interest"] = summary.apply(
         lambda r: compute_interest(r["amount"], r["date"]),
@@ -189,25 +222,69 @@ if not contributions_df.empty:
     )
     summary["Total Value"] = summary["amount"] + summary["Interest"]
 
-    summary_display = summary[
-        ["member_id", "name", "date", "amount", "Interest", "Total Value"]
-    ].rename(columns={
-        "member_id": "Member ID",
-        "name": "Member Name",
-        "date": "Contribution Date",
-        "amount": "Principal Amount"
-    })
-
-    st.dataframe(summary_display, use_container_width=True)
+    st.dataframe(
+        summary[["member_id", "name", "date", "amount", "Interest", "Total Value"]]
+        .rename(columns={
+            "member_id": "Member ID",
+            "name": "Member Name",
+            "date": "Date",
+            "amount": "Principal"
+        }),
+        use_container_width=True
+    )
 
     st.metric("Total Principal", f"{summary['amount'].sum():,.2f}")
     st.metric("Total Interest", f"{summary['Interest'].sum():,.2f}")
-    st.metric("Grand Total Value", f"{summary['Total Value'].sum():,.2f}")
+    st.metric("Grand Total", f"{summary['Total Value'].sum():,.2f}")
 else:
-    st.info("No contributions recorded yet")
+    st.info("No contributions yet")
 
 # ------------------------------------------
-# GENERATE STATEMENTS
+# MEMBER LEDGER STATEMENT (SEARCH)
+# ------------------------------------------
+st.subheader("Member Ledger Statement")
+
+search = st.text_input("Search by Member ID or Name")
+
+if search:
+    match = members_df[
+        members_df["member_id"].str.contains(search, case=False) |
+        members_df["name"].str.contains(search, case=False)
+    ]
+
+    if match.empty:
+        st.warning("No matching member found")
+    else:
+        m = match.iloc[0]
+        ledger = contributions_df[contributions_df["member_id"] == m["member_id"]]
+
+        if ledger.empty:
+            st.info("No transactions for this member")
+        else:
+            ledger = ledger.copy()
+            ledger["Interest"] = ledger.apply(
+                lambda r: compute_interest(r["amount"], r["date"]),
+                axis=1
+            )
+            ledger["Total Value"] = ledger["amount"] + ledger["Interest"]
+
+            st.dataframe(
+                ledger[["date", "amount", "Interest", "Total Value"]]
+                .rename(columns={"date": "Date", "amount": "Principal"}),
+                use_container_width=True
+            )
+
+            pdf = generate_ledger_pdf(m["member_id"], m["name"], ledger)
+
+            st.download_button(
+                "Download Ledger Statement (PDF)",
+                pdf,
+                f"ledger_{m['member_id']}.pdf",
+                "application/pdf"
+            )
+
+# ------------------------------------------
+# GENERATE ALL MEMBER STATEMENTS
 # ------------------------------------------
 st.subheader("Generate Statements")
 
@@ -215,21 +292,22 @@ if st.button("Generate All Member Statements") and not members_df.empty:
     grand_total = 0
     totals = {}
 
-    for _, row in members_df.iterrows():
-        p, i, t = compute_totals(row["member_id"], contributions_df)
-        totals[row["member_id"]] = (row["name"], p, i, t)
+    for _, r in members_df.iterrows():
+        p, i, t = compute_totals(r["member_id"], contributions_df)
+        totals[r["member_id"]] = (r["name"], p, i, t)
         grand_total += t
 
     for member_id, (name, p, i, t) in totals.items():
         ratio = t / grand_total if grand_total else 0
-        pdf_buffer = generate_pdf(member_id, name, p, i, t, ratio)
+        pdf = generate_pdf(member_id, name, p, i, t, ratio)
 
         st.download_button(
             f"Download Statement – {name}",
-            pdf_buffer,
+            pdf,
             f"statement_{member_id}.pdf",
             "application/pdf"
         )
 
     st.success("All statements generated successfully")
+
 
