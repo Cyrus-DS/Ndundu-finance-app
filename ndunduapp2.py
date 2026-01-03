@@ -14,7 +14,7 @@ from io import BytesIO
 # CONFIG
 # ==========================================
 
-INTEREST_RATE = 0.12
+INTEREST_RATE = 0.085
 COMPOUND_FREQUENCY = "daily"
 DB_NAME = "members.db"
 
