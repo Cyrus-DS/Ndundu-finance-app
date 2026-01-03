@@ -1,6 +1,6 @@
 # ==========================================
 # Member Contribution & Interest App
-# SQLite + CSV + Excel + PDF (FIXED)
+# SQLite + CSV + Excel + PDF + Contribution Summary
 # ==========================================
 
 import streamlit as st
@@ -152,7 +152,6 @@ if not members_df.empty:
             for _, row in members_df.iterrows()
         ]
         selected = st.selectbox("Select Member", member_options)
-
         c_member_id, c_member_name = selected.split(" - ")
 
         amount = st.number_input("Amount", min_value=1.0)
@@ -168,43 +167,47 @@ if not members_df.empty:
             conn.commit()
             conn.close()
             st.success(f"Contribution added for {c_member_name}")
+            st.rerun()
 else:
     st.info("Add members first")
 
 # ------------------------------------------
-# EXPORTS
+# CONTRIBUTION SUMMARY (✅ NEW)
 # ------------------------------------------
-st.subheader("Exports")
+st.subheader("Contribution Summary (Including Interest)")
 
-st.download_button(
-    "Download Members CSV",
-    members_df.to_csv(index=False).encode("utf-8"),
-    "members.csv",
-    "text/csv"
-)
+if not contributions_df.empty:
+    summary = contributions_df.merge(
+        members_df,
+        on="member_id",
+        how="left"
+    )
 
-st.download_button(
-    "Download Contributions CSV",
-    contributions_df.to_csv(index=False).encode("utf-8"),
-    "contributions.csv",
-    "text/csv"
-)
+    summary["Interest"] = summary.apply(
+        lambda r: compute_interest(r["amount"], r["date"]),
+        axis=1
+    )
+    summary["Total Value"] = summary["amount"] + summary["Interest"]
 
-excel_buffer = BytesIO()
-with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-    members_df.to_excel(writer, sheet_name="Members", index=False)
-    contributions_df.to_excel(writer, sheet_name="Contributions", index=False)
-excel_buffer.seek(0)
+    summary_display = summary[
+        ["member_id", "name", "date", "amount", "Interest", "Total Value"]
+    ].rename(columns={
+        "member_id": "Member ID",
+        "name": "Member Name",
+        "date": "Contribution Date",
+        "amount": "Principal Amount"
+    })
 
-st.download_button(
-    "Download Excel Workbook",
-    excel_buffer,
-    "portfolio_data.xlsx",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
+    st.dataframe(summary_display, use_container_width=True)
+
+    st.metric("Total Principal", f"{summary['amount'].sum():,.2f}")
+    st.metric("Total Interest", f"{summary['Interest'].sum():,.2f}")
+    st.metric("Grand Total Value", f"{summary['Total Value'].sum():,.2f}")
+else:
+    st.info("No contributions recorded yet")
 
 # ------------------------------------------
-# GENERATE STATEMENTS (✅ FIXED)
+# GENERATE STATEMENTS
 # ------------------------------------------
 st.subheader("Generate Statements")
 
