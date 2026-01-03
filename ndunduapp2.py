@@ -1,6 +1,7 @@
 # ==========================================
 # Member Contribution & Interest App
 # With SQLite + CSV + Excel Export + PDF Fix
+# Now includes member name in contribution selection
 # ==========================================
 
 import streamlit as st
@@ -153,7 +154,16 @@ with st.form("add_member"):
 st.subheader("Add Contribution")
 if not members_df.empty:
     with st.form("add_contribution"):
-        c_member_id = st.selectbox("Member", members_df["member_id"].tolist())
+        # Show "member_id - name" for easier selection
+        member_options = [
+            f"{row.member_id} - {row.name}" for _, row in members_df.iterrows()
+        ]
+        selected = st.selectbox("Select Member", member_options)
+        
+        # Extract member_id and name
+        c_member_id = selected.split(" - ")[0]
+        c_member_name = selected.split(" - ")[1]
+
         amount = st.number_input("Amount", min_value=1.0)
         date = st.date_input("Date")
         submit_c = st.form_submit_button("Add Contribution")
@@ -166,7 +176,7 @@ if not members_df.empty:
             )
             conn.commit()
             conn.close()
-            st.success("Contribution added")
+            st.success(f"Contribution added for {c_member_name}")
 else:
     st.info("Add members first")
 
