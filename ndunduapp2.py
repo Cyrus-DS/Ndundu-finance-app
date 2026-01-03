@@ -1,7 +1,6 @@
 # ==========================================
 # Member Contribution & Interest App
-# With SQLite + CSV + Excel Export + PDF Fix
-# Now includes member name in contribution selection
+# SQLite + CSV + Excel + PDF (FIXED)
 # ==========================================
 
 import streamlit as st
@@ -28,7 +27,6 @@ def init_db():
     conn = get_connection()
     cur = conn.cursor()
 
-    # Members table
     cur.execute("""
         CREATE TABLE IF NOT EXISTS members (
             member_id TEXT PRIMARY KEY,
@@ -36,7 +34,6 @@ def init_db():
         )
     """)
 
-    # Contributions table
     cur.execute("""
         CREATE TABLE IF NOT EXISTS contributions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,10 +58,9 @@ def compute_interest(amount, date):
         return 0.0
 
     delta_days = (today - date).days
-    years = delta_days / 365
 
     if COMPOUND_FREQUENCY == "monthly":
-        months = years * 12
+        months = delta_days / 30
         total = amount * ((1 + INTEREST_RATE / 12) ** months)
     else:
         total = amount * ((1 + INTEREST_RATE / 365) ** delta_days)
@@ -86,13 +82,11 @@ def fetch_contributions():
 
 def compute_totals(member_id, contributions_df):
     df = contributions_df[contributions_df["member_id"] == member_id]
-
     principal = df["amount"].sum()
     interest = sum(
-        compute_interest(row.amount, row.date)
-        for row in df.itertuples()
+        compute_interest(r.amount, r.date)
+        for r in df.itertuples()
     )
-
     return principal, interest, principal + interest
 
 def generate_pdf(member_id, name, principal, interest, total_value, ratio):
@@ -111,7 +105,6 @@ def generate_pdf(member_id, name, principal, interest, total_value, ratio):
     pdf.set_font("Arial", style="B")
     pdf.cell(200, 10, "Signature: ____________________________", ln=True)
 
-    # FIX for fpdf 1.7.2: output as string and wrap in BytesIO
     pdf_bytes = pdf.output(dest="S").encode("latin1")
     return BytesIO(pdf_bytes)
 
@@ -140,7 +133,7 @@ with st.form("add_member"):
             try:
                 conn.execute(
                     "INSERT INTO members (member_id, name) VALUES (?, ?)",
-                    (member_id, name)
+                    (member_id, name.strip())
                 )
                 conn.commit()
                 st.success(f"Member '{name}' added")
@@ -154,15 +147,13 @@ with st.form("add_member"):
 st.subheader("Add Contribution")
 if not members_df.empty:
     with st.form("add_contribution"):
-        # Show "member_id - name" for easier selection
         member_options = [
-            f"{row.member_id} - {row.name}" for _, row in members_df.iterrows()
+            f"{row['member_id']} - {row['name']}"
+            for _, row in members_df.iterrows()
         ]
         selected = st.selectbox("Select Member", member_options)
-        
-        # Extract member_id and name
-        c_member_id = selected.split(" - ")[0]
-        c_member_name = selected.split(" - ")[1]
+
+        c_member_id, c_member_name = selected.split(" - ")
 
         amount = st.number_input("Amount", min_value=1.0)
         date = st.date_input("Date")
@@ -181,34 +172,30 @@ else:
     st.info("Add members first")
 
 # ------------------------------------------
-# PORTFOLIO SUMMARY
-# ------------------------------------------
-st.subheader("Portfolio Summary")
-total_principal = contributions_df["amount"].sum()
-total_interest = sum(
-    compute_interest(r.amount, r.date)
-    for r in contributions_df.itertuples()
-)
-st.metric("Total Principal", f"{total_principal:,.2f}")
-st.metric("Total Interest", f"{total_interest:,.2f}")
-st.metric("Portfolio Value", f"{(total_principal + total_interest):,.2f}")
-
-# ------------------------------------------
 # EXPORTS
 # ------------------------------------------
 st.subheader("Exports")
-# CSV
-csv_members = members_df.to_csv(index=False).encode("utf-8")
-csv_contrib = contributions_df.to_csv(index=False).encode("utf-8")
-st.download_button("Download Members CSV", csv_members, "members.csv", "text/csv")
-st.download_button("Download Contributions CSV", csv_contrib, "contributions.csv", "text/csv")
 
-# Excel
+st.download_button(
+    "Download Members CSV",
+    members_df.to_csv(index=False).encode("utf-8"),
+    "members.csv",
+    "text/csv"
+)
+
+st.download_button(
+    "Download Contributions CSV",
+    contributions_df.to_csv(index=False).encode("utf-8"),
+    "contributions.csv",
+    "text/csv"
+)
+
 excel_buffer = BytesIO()
 with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
     members_df.to_excel(writer, sheet_name="Members", index=False)
     contributions_df.to_excel(writer, sheet_name="Contributions", index=False)
 excel_buffer.seek(0)
+
 st.download_button(
     "Download Excel Workbook",
     excel_buffer,
@@ -217,16 +204,17 @@ st.download_button(
 )
 
 # ------------------------------------------
-# GENERATE STATEMENTS
+# GENERATE STATEMENTS (✅ FIXED)
 # ------------------------------------------
 st.subheader("Generate Statements")
+
 if st.button("Generate All Member Statements") and not members_df.empty:
     grand_total = 0
     totals = {}
 
     for _, row in members_df.iterrows():
-        p, i, t = compute_totals(row.member_id, contributions_df)
-        totals[row.member_id] = (row.name, p, i, t)
+        p, i, t = compute_totals(row["member_id"], contributions_df)
+        totals[row["member_id"]] = (row["name"], p, i, t)
         grand_total += t
 
     for member_id, (name, p, i, t) in totals.items():
@@ -241,3 +229,4 @@ if st.button("Generate All Member Statements") and not members_df.empty:
         )
 
     st.success("All statements generated successfully")
+
