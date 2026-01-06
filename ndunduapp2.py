@@ -11,7 +11,6 @@ from fpdf import FPDF
 from io import BytesIO
 from supabase import create_client
 
-st.write(st.secrets)  # For debugging purposes; remove in production
 
 # ==========================================
 # CONFIG
