@@ -1,53 +1,33 @@
 # ==========================================
 # Member Contribution & Interest App
-# SQLite + CSV + Excel + PDF + Ledger Statements
+# SUPABASE + Streamlit + PDF + Ledger
+# Fully Polished Version
 # ==========================================
 
 import streamlit as st
 import datetime
-import sqlite3
 import pandas as pd
 from fpdf import FPDF
 from io import BytesIO
+from supabase import create_client
 
 # ==========================================
 # CONFIG
 # ==========================================
-INTEREST_RATE = 0.12
+INTEREST_RATE = 0.085  # 8.5% annual
 COMPOUND_FREQUENCY = "daily"
-DB_NAME = "members.db"
 
 # ==========================================
-# DATABASE SETUP
+# SUPABASE CLIENT
 # ==========================================
-def get_connection():
-    return sqlite3.connect(DB_NAME, check_same_thread=False)
+@st.cache_resource
+def get_supabase():
+    return create_client(
+        st.secrets["SUPABASE_URL"],
+        st.secrets["SUPABASE_KEY"]
+    )
 
-def init_db():
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS members (
-            member_id TEXT PRIMARY KEY,
-            name TEXT NOT NULL
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS contributions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            member_id TEXT,
-            amount REAL,
-            date TEXT,
-            FOREIGN KEY(member_id) REFERENCES members(member_id)
-        )
-    """)
-
-    conn.commit()
-    conn.close()
-
-init_db()
+supabase = get_supabase()
 
 # ==========================================
 # BUSINESS LOGIC
@@ -56,7 +36,6 @@ def compute_interest(amount, date):
     today = datetime.date.today()
     if date > today:
         return 0.0
-
     delta_days = (today - date).days
 
     if COMPOUND_FREQUENCY == "monthly":
@@ -67,27 +46,43 @@ def compute_interest(amount, date):
 
     return total - amount
 
-def fetch_members():
-    conn = get_connection()
-    df = pd.read_sql("SELECT * FROM members", conn)
-    conn.close()
-    return df
-
-def fetch_contributions():
-    conn = get_connection()
-    df = pd.read_sql("SELECT * FROM contributions", conn)
-    conn.close()
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    return df
-
 def compute_totals(member_id, contributions_df):
     df = contributions_df[contributions_df["member_id"] == member_id]
     principal = df["amount"].sum()
-    interest = sum(
-        compute_interest(r.amount, r.date)
-        for r in df.itertuples()
-    )
+    interest = sum(compute_interest(r.amount, r.date) for r in df.itertuples())
     return principal, interest, principal + interest
+
+# ==========================================
+# DATA ACCESS (SUPABASE)
+# ==========================================
+def fetch_members():
+    res = supabase.table("members").select("*").execute()
+    if res.data:
+        return pd.DataFrame(res.data)
+    return pd.DataFrame(columns=["member_id", "name"])
+
+def fetch_contributions(member_id=None):
+    query = supabase.table("contributions")
+    if member_id:
+        query = query.eq("member_id", member_id)
+    res = query.select("*").execute()
+    df = pd.DataFrame(res.data) if res.data else pd.DataFrame(columns=["member_id", "amount", "date"])
+    if not df.empty:
+        df["date"] = pd.to_datetime(df["date"]).dt.date
+    return df
+
+def add_member(member_id, name):
+    supabase.table("members").insert({
+        "member_id": member_id,
+        "name": name.strip()
+    }).execute()
+
+def add_contribution(member_id, amount, date):
+    supabase.table("contributions").insert({
+        "member_id": member_id,
+        "amount": amount,
+        "date": date.isoformat()
+    }).execute()
 
 # ==========================================
 # PDF GENERATORS
@@ -127,7 +122,6 @@ def generate_ledger_pdf(member_id, name, ledger_df):
     pdf.cell(55, 8, "Total Value", border=1, ln=True)
 
     pdf.set_font("Arial", size=10)
-
     for _, r in ledger_df.iterrows():
         pdf.cell(35, 8, str(r["date"]), border=1)
         pdf.cell(45, 8, f"{r['amount']:,.2f}", border=1)
@@ -139,7 +133,6 @@ def generate_ledger_pdf(member_id, name, ledger_df):
     pdf.cell(200, 8, f"Total Principal: {ledger_df['amount'].sum():,.2f}", ln=True)
     pdf.cell(200, 8, f"Total Interest: {ledger_df['Interest'].sum():,.2f}", ln=True)
     pdf.cell(200, 8, f"Grand Total: {ledger_df['Total Value'].sum():,.2f}", ln=True)
-
     pdf.ln(10)
     pdf.cell(200, 8, "Signature: ____________________________", ln=True)
 
@@ -166,17 +159,12 @@ with st.form("add_member"):
         if not member_id or not name:
             st.error("All fields required")
         else:
-            conn = get_connection()
             try:
-                conn.execute(
-                    "INSERT INTO members (member_id, name) VALUES (?, ?)",
-                    (member_id, name.strip())
-                )
-                conn.commit()
+                add_member(member_id, name)
                 st.success(f"Member '{name}' added")
-            except sqlite3.IntegrityError:
+                st.experimental_rerun()
+            except Exception:
                 st.error("Member ID already exists")
-            conn.close()
 
 # ------------------------------------------
 # ADD CONTRIBUTION
@@ -184,10 +172,7 @@ with st.form("add_member"):
 st.subheader("Add Contribution")
 if not members_df.empty:
     with st.form("add_contribution"):
-        member_options = [
-            f"{r['member_id']} - {r['name']}"
-            for _, r in members_df.iterrows()
-        ]
+        member_options = [f"{r['member_id']} - {r['name']}" for _, r in members_df.iterrows()]
         selected = st.selectbox("Select Member", member_options)
         c_member_id, c_member_name = selected.split(" - ")
 
@@ -196,15 +181,9 @@ if not members_df.empty:
         submit_c = st.form_submit_button("Add Contribution")
 
         if submit_c:
-            conn = get_connection()
-            conn.execute(
-                "INSERT INTO contributions (member_id, amount, date) VALUES (?, ?, ?)",
-                (c_member_id, amount, date.isoformat())
-            )
-            conn.commit()
-            conn.close()
+            add_contribution(c_member_id, amount, date)
             st.success(f"Contribution added for {c_member_name}")
-            st.rerun()
+            st.experimental_rerun()
 else:
     st.info("Add members first")
 
@@ -212,24 +191,14 @@ else:
 # CONTRIBUTION SUMMARY
 # ------------------------------------------
 st.subheader("Contribution Summary (Including Interest)")
-
 if not contributions_df.empty:
     summary = contributions_df.merge(members_df, on="member_id", how="left")
-
-    summary["Interest"] = summary.apply(
-        lambda r: compute_interest(r["amount"], r["date"]),
-        axis=1
-    )
+    summary["Interest"] = summary.apply(lambda r: compute_interest(r["amount"], r["date"]), axis=1)
     summary["Total Value"] = summary["amount"] + summary["Interest"]
 
     st.dataframe(
         summary[["member_id", "name", "date", "amount", "Interest", "Total Value"]]
-        .rename(columns={
-            "member_id": "Member ID",
-            "name": "Member Name",
-            "date": "Date",
-            "amount": "Principal"
-        }),
+        .rename(columns={"member_id": "Member ID", "name": "Member Name", "date": "Date", "amount": "Principal"}),
         use_container_width=True
     )
 
@@ -240,32 +209,18 @@ else:
     st.info("No contributions yet")
 
 # ------------------------------------------
-# MEMBER LEDGER STATEMENT (SEARCH)
+# MEMBER LEDGER STATEMENT
 # ------------------------------------------
 st.subheader("Member Ledger Statement")
-
 search = st.text_input("Search by Member ID or Name")
-
-if search:
-    match = members_df[
-        members_df["member_id"].str.contains(search, case=False) |
-        members_df["name"].str.contains(search, case=False)
-    ]
-
-    if match.empty:
-        st.warning("No matching member found")
-    else:
+if search and not members_df.empty:
+    match = members_df[members_df["member_id"].str.contains(search, case=False) |
+                       members_df["name"].str.contains(search, case=False)]
+    if not match.empty:
         m = match.iloc[0]
-        ledger = contributions_df[contributions_df["member_id"] == m["member_id"]]
-
-        if ledger.empty:
-            st.info("No transactions for this member")
-        else:
-            ledger = ledger.copy()
-            ledger["Interest"] = ledger.apply(
-                lambda r: compute_interest(r["amount"], r["date"]),
-                axis=1
-            )
+        ledger = fetch_contributions(m["member_id"])
+        if not ledger.empty:
+            ledger["Interest"] = ledger.apply(lambda r: compute_interest(r["amount"], r["date"]), axis=1)
             ledger["Total Value"] = ledger["amount"] + ledger["Interest"]
 
             st.dataframe(
@@ -275,19 +230,19 @@ if search:
             )
 
             pdf = generate_ledger_pdf(m["member_id"], m["name"], ledger)
-
             st.download_button(
                 "Download Ledger Statement (PDF)",
                 pdf,
                 f"ledger_{m['member_id']}.pdf",
                 "application/pdf"
             )
+    else:
+        st.warning("No matching member found")
 
 # ------------------------------------------
 # GENERATE ALL MEMBER STATEMENTS
 # ------------------------------------------
-st.subheader("Generate Statements")
-
+st.subheader("Generate All Member Statements")
 if st.button("Generate All Member Statements") and not members_df.empty:
     grand_total = 0
     totals = {}
@@ -300,7 +255,6 @@ if st.button("Generate All Member Statements") and not members_df.empty:
     for member_id, (name, p, i, t) in totals.items():
         ratio = t / grand_total if grand_total else 0
         pdf = generate_pdf(member_id, name, p, i, t, ratio)
-
         st.download_button(
             f"Download Statement – {name}",
             pdf,
@@ -309,5 +263,3 @@ if st.button("Generate All Member Statements") and not members_df.empty:
         )
 
     st.success("All statements generated successfully")
-
-
