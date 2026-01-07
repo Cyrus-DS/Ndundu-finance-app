@@ -1,7 +1,7 @@
 # ==========================================
 # Member Contribution & Interest App
 # SUPABASE + Streamlit + PDF + Ledger
-# Fully Polished Version
+# Fully Polished Version (FIXED)
 # ==========================================
 
 import streamlit as st
@@ -10,7 +10,6 @@ import pandas as pd
 from fpdf import FPDF
 from io import BytesIO
 from supabase import create_client
-
 
 # ==========================================
 # CONFIG
@@ -37,6 +36,7 @@ def compute_interest(amount, date):
     today = datetime.date.today()
     if date > today:
         return 0.0
+
     delta_days = (today - date).days
 
     if COMPOUND_FREQUENCY == "monthly":
@@ -58,9 +58,7 @@ def compute_totals(member_id, contributions_df):
 # ==========================================
 def fetch_members():
     res = supabase.table("members").select("*").execute()
-    if res.data:
-        return pd.DataFrame(res.data)
-    return pd.DataFrame(columns=["member_id", "name"])
+    return pd.DataFrame(res.data) if res.data else pd.DataFrame(columns=["member_id", "name"])
 
 def fetch_contributions(member_id=None):
     query = supabase.table("contributions")
@@ -163,7 +161,7 @@ with st.form("add_member"):
             try:
                 add_member(member_id, name)
                 st.success(f"Member '{name}' added")
-                st.experimental_rerun()
+                st.rerun()
             except Exception:
                 st.error("Member ID already exists")
 
@@ -184,7 +182,7 @@ if not members_df.empty:
         if submit_c:
             add_contribution(c_member_id, amount, date)
             st.success(f"Contribution added for {c_member_name}")
-            st.experimental_rerun()
+            st.rerun()
 else:
     st.info("Add members first")
 
@@ -200,7 +198,7 @@ if not contributions_df.empty:
     st.dataframe(
         summary[["member_id", "name", "date", "amount", "Interest", "Total Value"]]
         .rename(columns={"member_id": "Member ID", "name": "Member Name", "date": "Date", "amount": "Principal"}),
-        use_container_width=True
+        width="stretch"
     )
 
     st.metric("Total Principal", f"{summary['amount'].sum():,.2f}")
@@ -214,12 +212,17 @@ else:
 # ------------------------------------------
 st.subheader("Member Ledger Statement")
 search = st.text_input("Search by Member ID or Name")
+
 if search and not members_df.empty:
-    match = members_df[members_df["member_id"].str.contains(search, case=False) |
-                       members_df["name"].str.contains(search, case=False)]
+    match = members_df[
+        members_df["member_id"].str.contains(search, case=False) |
+        members_df["name"].str.contains(search, case=False)
+    ]
+
     if not match.empty:
         m = match.iloc[0]
         ledger = fetch_contributions(m["member_id"])
+
         if not ledger.empty:
             ledger["Interest"] = ledger.apply(lambda r: compute_interest(r["amount"], r["date"]), axis=1)
             ledger["Total Value"] = ledger["amount"] + ledger["Interest"]
@@ -227,7 +230,7 @@ if search and not members_df.empty:
             st.dataframe(
                 ledger[["date", "amount", "Interest", "Total Value"]]
                 .rename(columns={"date": "Date", "amount": "Principal"}),
-                use_container_width=True
+                width="stretch"
             )
 
             pdf = generate_ledger_pdf(m["member_id"], m["name"], ledger)
@@ -256,6 +259,7 @@ if st.button("Generate All Member Statements") and not members_df.empty:
     for member_id, (name, p, i, t) in totals.items():
         ratio = t / grand_total if grand_total else 0
         pdf = generate_pdf(member_id, name, p, i, t, ratio)
+
         st.download_button(
             f"Download Statement – {name}",
             pdf,
