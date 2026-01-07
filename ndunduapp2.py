@@ -1,7 +1,7 @@
 # ==========================================
 # Member Contribution & Interest App
 # SUPABASE + Streamlit + PDF + Ledger
-# Fully Polished Version (EDIT ENABLED)
+# Fully Polished Version (FIXED – with Edit Contribution)
 # ==========================================
 
 import streamlit as st
@@ -60,20 +60,16 @@ def fetch_members():
     res = supabase.table("members").select("*").execute()
     return pd.DataFrame(res.data) if res.data else pd.DataFrame(columns=["member_id", "name"])
 
-# 🔧 FIX + ID EXPOSED (minimal change)
 def fetch_contributions(member_id=None):
+    # Include 'id' for editing
     query = supabase.table("contributions").select("id, member_id, amount, date")
     if member_id:
         query = query.eq("member_id", member_id)
+
     res = query.execute()
-
-    df = pd.DataFrame(res.data) if res.data else pd.DataFrame(
-        columns=["id", "member_id", "amount", "date"]
-    )
-
+    df = pd.DataFrame(res.data) if res.data else pd.DataFrame(columns=["id", "member_id", "amount", "date"])
     if not df.empty:
         df["date"] = pd.to_datetime(df["date"]).dt.date
-
     return df
 
 def add_member(member_id, name):
@@ -89,7 +85,6 @@ def add_contribution(member_id, amount, date):
         "date": date.isoformat()
     }).execute()
 
-# 🆕 UPDATE FUNCTION (new, isolated)
 def update_contribution(contribution_id, amount, date):
     supabase.table("contributions").update({
         "amount": amount,
@@ -97,7 +92,7 @@ def update_contribution(contribution_id, amount, date):
     }).eq("id", contribution_id).execute()
 
 # ==========================================
-# PDF GENERATORS (UNCHANGED)
+# PDF GENERATORS
 # ==========================================
 def generate_pdf(member_id, name, principal, interest, total_value, ratio):
     pdf = FPDF()
@@ -145,7 +140,6 @@ def generate_ledger_pdf(member_id, name, ledger_df):
     pdf.cell(200, 8, f"Total Principal: {ledger_df['amount'].sum():,.2f}", ln=True)
     pdf.cell(200, 8, f"Total Interest: {ledger_df['Interest'].sum():,.2f}", ln=True)
     pdf.cell(200, 8, f"Grand Total: {ledger_df['Total Value'].sum():,.2f}", ln=True)
-
     pdf.ln(10)
     pdf.cell(200, 8, "Signature: ____________________________", ln=True)
 
@@ -201,7 +195,28 @@ else:
     st.info("Add members first")
 
 # ------------------------------------------
-# MEMBER LEDGER + EDIT
+# CONTRIBUTION SUMMARY
+# ------------------------------------------
+st.subheader("Contribution Summary (Including Interest)")
+if not contributions_df.empty:
+    summary = contributions_df.merge(members_df, on="member_id", how="left")
+    summary["Interest"] = summary.apply(lambda r: compute_interest(r["amount"], r["date"]), axis=1)
+    summary["Total Value"] = summary["amount"] + summary["Interest"]
+
+    st.dataframe(
+        summary[["member_id", "name", "date", "amount", "Interest", "Total Value"]]
+        .rename(columns={"member_id": "Member ID", "name": "Member Name", "date": "Date", "amount": "Principal"}),
+        width="stretch"
+    )
+
+    st.metric("Total Principal", f"{summary['amount'].sum():,.2f}")
+    st.metric("Total Interest", f"{summary['Interest'].sum():,.2f}")
+    st.metric("Grand Total", f"{summary['Total Value'].sum():,.2f}")
+else:
+    st.info("No contributions yet")
+
+# ------------------------------------------
+# MEMBER LEDGER STATEMENT
 # ------------------------------------------
 st.subheader("Member Ledger Statement")
 search = st.text_input("Search by Member ID or Name")
@@ -221,19 +236,27 @@ if search and not members_df.empty:
             ledger["Total Value"] = ledger["amount"] + ledger["Interest"]
 
             st.dataframe(
-                ledger[["date", "amount", "Interest", "Total Value"]],
+                ledger[["date", "amount", "Interest", "Total Value"]]
+                .rename(columns={"date": "Date", "amount": "Principal"}),
                 width="stretch"
             )
 
-            # 🆕 EDIT CONTRIBUTION (ADDED)
-            st.subheader("Edit Contribution")
+            pdf = generate_ledger_pdf(m["member_id"], m["name"], ledger)
+            st.download_button(
+                "Download Ledger Statement (PDF)",
+                pdf,
+                f"ledger_{m['member_id']}.pdf",
+                "application/pdf"
+            )
 
+            # ----------------------------
+            # EDIT CONTRIBUTION
+            # ----------------------------
             ledger["label"] = ledger.apply(
                 lambda r: f"ID {r['id']} | {r['date']} | {r['amount']:,.2f}",
                 axis=1
             )
-
-            selected = st.selectbox("Select contribution", ledger["label"])
+            selected = st.selectbox("Select contribution to edit", ledger["label"])
             selected_id = int(selected.split("|")[0].replace("ID", "").strip())
             row = ledger[ledger["id"] == selected_id].iloc[0]
 
@@ -246,6 +269,32 @@ if search and not members_df.empty:
                     update_contribution(selected_id, new_amount, new_date)
                     st.success("Contribution updated successfully")
                     st.rerun()
-
     else:
         st.warning("No matching member found")
+
+# ------------------------------------------
+# GENERATE ALL MEMBER STATEMENTS
+# ------------------------------------------
+st.subheader("Generate All Member Statements")
+if st.button("Generate All Member Statements") and not members_df.empty:
+    grand_total = 0
+    totals = {}
+
+    for _, r in members_df.iterrows():
+        p, i, t = compute_totals(r["member_id"], contributions_df)
+        totals[r["member_id"]] = (r["name"], p, i, t)
+        grand_total += t
+
+    for member_id, (name, p, i, t) in totals.items():
+        ratio = t / grand_total if grand_total else 0
+        pdf = generate_pdf(member_id, name, p, i, t, ratio)
+
+        st.download_button(
+            f"Download Statement – {name}",
+            pdf,
+            f"statement_{member_id}.pdf",
+            "application/pdf"
+        )
+
+    st.success("All statements generated successfully")
+
