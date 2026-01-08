@@ -66,9 +66,7 @@ def fetch_contributions(member_id=None):
         query = query.eq("member_id", member_id)
 
     res = query.execute()
-    df = pd.DataFrame(res.data) if res.data else pd.DataFrame(
-        columns=["id", "member_id", "amount", "date"]
-    )
+    df = pd.DataFrame(res.data) if res.data else pd.DataFrame(columns=["id", "member_id", "amount", "date"])
     if not df.empty:
         df["date"] = pd.to_datetime(df["date"]).dt.date
     return df
@@ -196,6 +194,27 @@ else:
     st.info("Add members first")
 
 # ------------------------------------------
+# CONTRIBUTION SUMMARY
+# ------------------------------------------
+st.subheader("Contribution Summary (Including Interest)")
+if not contributions_df.empty:
+    summary = contributions_df.merge(members_df, on="member_id", how="left")
+    summary["Interest"] = summary.apply(lambda r: compute_interest(r["amount"], r["date"]), axis=1)
+    summary["Total Value"] = summary["amount"] + summary["Interest"]
+
+    st.dataframe(
+        summary[["member_id", "name", "date", "amount", "Interest", "Total Value"]]
+        .rename(columns={"member_id": "Member ID", "name": "Member Name", "date": "Date", "amount": "Principal"}),
+        width="stretch"
+    )
+
+    st.metric("Total Principal", f"{summary['amount'].sum():,.2f}")
+    st.metric("Total Interest", f"{summary['Interest'].sum():,.2f}")
+    st.metric("Grand Total", f"{summary['Total Value'].sum():,.2f}")
+else:
+    st.info("No contributions yet")
+
+# ------------------------------------------
 # MEMBER LEDGER STATEMENT
 # ------------------------------------------
 st.subheader("Member Ledger Statement")
@@ -212,33 +231,36 @@ if search and not members_df.empty:
         ledger = fetch_contributions(m["member_id"])
 
         if not ledger.empty:
-            ledger["Interest"] = ledger.apply(
-                lambda r: compute_interest(r["amount"], r["date"]), axis=1
-            )
+            ledger["Interest"] = ledger.apply(lambda r: compute_interest(r["amount"], r["date"]), axis=1)
             ledger["Total Value"] = ledger["amount"] + ledger["Interest"]
 
             st.dataframe(
-                ledger[["date", "amount", "Interest", "Total Value"]],
+                ledger[["date", "amount", "Interest", "Total Value"]]
+                .rename(columns={"date": "Date", "amount": "Principal"}),
                 width="stretch"
             )
 
+            pdf = generate_ledger_pdf(m["member_id"], m["name"], ledger)
+            st.download_button(
+                "Download Ledger Statement (PDF)",
+                pdf,
+                f"ledger_{m['member_id']}.pdf",
+                "application/pdf"
+            )
+
             # ----------------------------
-            # EDIT CONTRIBUTION (FIXED)
+            # EDIT CONTRIBUTION (UUID FIX ONLY)
             # ----------------------------
             ledger["label"] = ledger.apply(
                 lambda r: f"ID {r['id']} | {r['date']} | {r['amount']:,.2f}",
                 axis=1
             )
-
             selected = st.selectbox("Select contribution to edit", ledger["label"])
             selected_id = selected.split("|")[0].replace("ID", "").strip()
-
             row = ledger[ledger["id"] == selected_id].iloc[0]
 
             with st.form("edit_contribution"):
-                new_amount = st.number_input(
-                    "Amount", value=float(row["amount"]), min_value=1.0
-                )
+                new_amount = st.number_input("Amount", value=float(row["amount"]), min_value=1.0)
                 new_date = st.date_input("Date", value=row["date"])
                 save = st.form_submit_button("Update Contribution")
 
@@ -246,3 +268,31 @@ if search and not members_df.empty:
                     update_contribution(selected_id, new_amount, new_date)
                     st.success("Contribution updated successfully")
                     st.rerun()
+    else:
+        st.warning("No matching member found")
+
+# ------------------------------------------
+# GENERATE ALL MEMBER STATEMENTS
+# ------------------------------------------
+st.subheader("Generate All Member Statements")
+if st.button("Generate All Member Statements") and not members_df.empty:
+    grand_total = 0
+    totals = {}
+
+    for _, r in members_df.iterrows():
+        p, i, t = compute_totals(r["member_id"], contributions_df)
+        totals[r["member_id"]] = (r["name"], p, i, t)
+        grand_total += t
+
+    for member_id, (name, p, i, t) in totals.items():
+        ratio = t / grand_total if grand_total else 0
+        pdf = generate_pdf(member_id, name, p, i, t, ratio)
+
+        st.download_button(
+            f"Download Statement – {name}",
+            pdf,
+            f"statement_{member_id}.pdf",
+            "application/pdf"
+        )
+
+    st.success("All statements generated successfully")
