@@ -202,18 +202,17 @@ if not contributions_df.empty:
     summary["Interest"] = summary.apply(lambda r: compute_interest(r["amount"], r["date"]), axis=1)
     summary["Total Value"] = summary["amount"] + summary["Interest"]
 
-    display_summary = summary[[
-        "member_id", "name", "date", "amount", "Interest", "Total Value"
-    ]].rename(columns={
+    display_summary = summary[
+        ["member_id", "name", "date", "amount", "Interest", "Total Value"]
+    ].rename(columns={
         "member_id": "Member ID",
         "name": "Member Name",
         "date": "Date",
         "amount": "Principal"
     })
 
-    display_summary["Principal"] = display_summary["Principal"].map(lambda x: f"{x:,.2f}")
-    display_summary["Interest"] = display_summary["Interest"].map(lambda x: f"{x:,.2f}")
-    display_summary["Total Value"] = display_summary["Total Value"].map(lambda x: f"{x:,.2f}")
+    for col in ["Principal", "Interest", "Total Value"]:
+        display_summary[col] = display_summary[col].map(lambda x: f"{x:,.2f}")
 
     st.dataframe(display_summary, width="stretch")
 
@@ -224,7 +223,7 @@ else:
     st.info("No contributions yet")
 
 # ------------------------------------------
-# MEMBER LEDGER STATEMENT
+# MEMBER LEDGER STATEMENT (WITH RUNNING BALANCE)
 # ------------------------------------------
 st.subheader("Member Ledger Statement")
 search = st.text_input("Search by Member ID or Name")
@@ -240,14 +239,25 @@ if search and not members_df.empty:
         ledger = fetch_contributions(m["member_id"])
 
         if not ledger.empty:
+            ledger = ledger.sort_values("date")
+
             ledger["Interest"] = ledger.apply(lambda r: compute_interest(r["amount"], r["date"]), axis=1)
             ledger["Total Value"] = ledger["amount"] + ledger["Interest"]
 
-            st.dataframe(
-                ledger[["date", "amount", "Interest", "Total Value"]]
-                .rename(columns={"date": "Date", "amount": "Principal"}),
-                width="stretch"
-            )
+            # ✅ Running Balance
+            ledger["Running Balance"] = ledger["Total Value"].cumsum()
+
+            display_ledger = ledger[
+                ["date", "amount", "Interest", "Total Value", "Running Balance"]
+            ].rename(columns={
+                "date": "Date",
+                "amount": "Principal"
+            })
+
+            for col in ["Principal", "Interest", "Total Value", "Running Balance"]:
+                display_ledger[col] = display_ledger[col].map(lambda x: f"{x:,.2f}")
+
+            st.dataframe(display_ledger, width="stretch")
 
             pdf = generate_ledger_pdf(m["member_id"], m["name"], ledger)
             st.download_button(
@@ -302,3 +312,4 @@ if st.button("Generate All Member Statements") and not members_df.empty:
         )
 
     st.success("All statements generated successfully")
+
