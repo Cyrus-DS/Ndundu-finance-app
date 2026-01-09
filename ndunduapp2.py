@@ -194,7 +194,7 @@ else:
     st.info("Add members first")
 
 # ------------------------------------------
-# CONTRIBUTION SUMMARY
+# CONTRIBUTION SUMMARY (FORMATTED NUMBERS)
 # ------------------------------------------
 st.subheader("Contribution Summary (Including Interest)")
 if not contributions_df.empty:
@@ -202,11 +202,20 @@ if not contributions_df.empty:
     summary["Interest"] = summary.apply(lambda r: compute_interest(r["amount"], r["date"]), axis=1)
     summary["Total Value"] = summary["amount"] + summary["Interest"]
 
-    st.dataframe(
-        summary[["member_id", "name", "date", "amount", "Interest", "Total Value"]]
-        .rename(columns={"member_id": "Member ID", "name": "Member Name", "date": "Date", "amount": "Principal"}),
-        width="stretch"
-    )
+    display_summary = summary[[
+        "member_id", "name", "date", "amount", "Interest", "Total Value"
+    ]].rename(columns={
+        "member_id": "Member ID",
+        "name": "Member Name",
+        "date": "Date",
+        "amount": "Principal"
+    })
+
+    display_summary["Principal"] = display_summary["Principal"].map(lambda x: f"{x:,.2f}")
+    display_summary["Interest"] = display_summary["Interest"].map(lambda x: f"{x:,.2f}")
+    display_summary["Total Value"] = display_summary["Total Value"].map(lambda x: f"{x:,.2f}")
+
+    st.dataframe(display_summary, width="stretch")
 
     st.metric("Total Principal", f"{summary['amount'].sum():,.2f}")
     st.metric("Total Interest", f"{summary['Interest'].sum():,.2f}")
@@ -248,9 +257,6 @@ if search and not members_df.empty:
                 "application/pdf"
             )
 
-            # ----------------------------
-            # EDIT CONTRIBUTION (UUID FIX ONLY)
-            # ----------------------------
             ledger["label"] = ledger.apply(
                 lambda r: f"ID {r['id']} | {r['date']} | {r['amount']:,.2f}",
                 axis=1
