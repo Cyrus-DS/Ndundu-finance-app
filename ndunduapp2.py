@@ -73,8 +73,8 @@ def compute_member_totals(ledger_df):
 
     principal = ledger_df["amount"].sum()
     interest = ledger_df["Interest"].sum()
-    total_value = ledger_df["Running Balance"].iloc[-1]
-    return principal, interest, total_value
+    current_total_value = ledger_df["Running Balance"].iloc[-1]
+    return principal, interest, current_total_value
 
 def compute_all_member_totals(members_df, contributions_df):
     member_data = {}
@@ -85,16 +85,16 @@ def compute_all_member_totals(members_df, contributions_df):
         name = r["name"]
 
         ledger = prepare_member_ledger(member_id, contributions_df)
-        principal, interest, total_value = compute_member_totals(ledger)
+        principal, interest, current_total_value = compute_member_totals(ledger)
 
         member_data[member_id] = {
             "name": name,
             "ledger": ledger,
             "principal": principal,
             "interest": interest,
-            "total_value": total_value
+            "total_value": current_total_value
         }
-        grand_total += total_value
+        grand_total += current_total_value
 
     return member_data, grand_total
 
@@ -194,7 +194,7 @@ class MemberStatementPDF(FPDF):
         name,
         principal,
         interest,
-        portfolio_value,
+        current_total_value,
         ratio,
         monthly_rate,
         target_amount,
@@ -217,7 +217,7 @@ class MemberStatementPDF(FPDF):
             ("Member ID", str(member_id)),
             ("Total Principal", f"{principal:,.2f}"),
             ("Total Interest", f"{interest:,.2f}"),
-            ("Portfolio Value", f"{portfolio_value:,.2f}"),
+            ("Current Total Value", f"{current_total_value:,.2f}"),
             ("Contribution Ratio", f"{ratio:.4%}"),
             ("Monthly Contribution Rate", f"{monthly_rate:,.2f}"),
             ("Target Amount", f"{target_amount:,.2f}"),
@@ -283,10 +283,10 @@ def generate_unified_pdf(member_id, name, ledger_df, ratio, monthly_rate, target
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
 
-    total_principal, total_interest, portfolio_value = compute_member_totals(ledger_df)
+    total_principal, total_interest, current_total_value = compute_member_totals(ledger_df)
 
     time_to_target = project_time_to_target(
-        current_value=portfolio_value,
+        current_value=current_total_value,
         monthly_contribution=monthly_rate,
         target_amount=target_amount
     )
@@ -301,7 +301,7 @@ def generate_unified_pdf(member_id, name, ledger_df, ratio, monthly_rate, target
         name=name,
         principal=total_principal,
         interest=total_interest,
-        portfolio_value=portfolio_value,
+        current_total_value=current_total_value,
         ratio=ratio,
         monthly_rate=monthly_rate,
         target_amount=target_amount,
@@ -449,15 +449,15 @@ if search and not members_df.empty:
             for col in ["Principal", "Interest", "Total Value", "Running Balance"]:
                 display_ledger[col] = display_ledger[col].map(lambda x: f"{x:,.2f}")
 
-            principal, interest, total_value = compute_member_totals(ledger)
+            principal, interest, current_total_value = compute_member_totals(ledger)
             member_data, grand_total = compute_all_member_totals(members_df, contributions_df)
-            ratio = total_value / grand_total if grand_total else 0.0
+            ratio = current_total_value / grand_total if grand_total else 0.0
 
             monthly_rate = projection_monthly_rate
             target_amount = projection_target_amount
 
             time_to_target = project_time_to_target(
-                current_value=total_value,
+                current_value=current_total_value,
                 monthly_contribution=monthly_rate,
                 target_amount=target_amount
             )
@@ -467,7 +467,7 @@ if search and not members_df.empty:
             st.write(f"**Member ID:** {m['member_id']}")
             st.write(f"**Total Principal:** {principal:,.2f}")
             st.write(f"**Total Interest:** {interest:,.2f}")
-            st.write(f"**Portfolio Value:** {total_value:,.2f}")
+            st.write(f"**Current Total Value:** {current_total_value:,.2f}")
             st.write(f"**Contribution Ratio:** {ratio:.4%}")
             st.write(f"**Monthly Contribution Rate:** {monthly_rate:,.2f}")
             st.write(f"**Target Amount:** {target_amount:,.2f}")
