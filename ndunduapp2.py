@@ -278,18 +278,17 @@ class MemberStatementPDF(FPDF):
 # ==========================================
 # UNIFIED PDF GENERATOR
 # ==========================================
-def generate_unified_pdf(member_id, name, ledger_df, ratio):
+def generate_unified_pdf(member_id, name, ledger_df, ratio, monthly_rate, target_amount):
     pdf = MemberStatementPDF(PARTNERSHIP_NAME)
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
 
     total_principal, total_interest, portfolio_value = compute_member_totals(ledger_df)
 
-    monthly_rate = MONTHLY_CONTRIBUTION_RATE
     time_to_target = project_time_to_target(
         current_value=portfolio_value,
         monthly_contribution=monthly_rate,
-        target_amount=TARGET_AMOUNT
+        target_amount=target_amount
     )
     time_to_target_text = format_time_to_target(time_to_target)
 
@@ -305,7 +304,7 @@ def generate_unified_pdf(member_id, name, ledger_df, ratio):
         portfolio_value=portfolio_value,
         ratio=ratio,
         monthly_rate=monthly_rate,
-        target_amount=TARGET_AMOUNT,
+        target_amount=target_amount,
         time_to_target_text=time_to_target_text
     )
 
@@ -328,6 +327,31 @@ st.title("Member Contribution & Interest App")
 
 members_df = fetch_members()
 contributions_df = fetch_contributions()
+
+# ------------------------------------------
+# PROJECTION SETTINGS
+# ------------------------------------------
+st.subheader("Projection Settings")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    projection_monthly_rate = st.number_input(
+        "Monthly Contribution Rate",
+        min_value=0.0,
+        value=float(MONTHLY_CONTRIBUTION_RATE),
+        step=100.0,
+        format="%.2f"
+    )
+
+with col2:
+    projection_target_amount = st.number_input(
+        "Target Amount",
+        min_value=0.0,
+        value=float(TARGET_AMOUNT),
+        step=1000.0,
+        format="%.2f"
+    )
 
 # ------------------------------------------
 # ADD MEMBER
@@ -429,11 +453,13 @@ if search and not members_df.empty:
             member_data, grand_total = compute_all_member_totals(members_df, contributions_df)
             ratio = total_value / grand_total if grand_total else 0.0
 
-            monthly_rate = MONTHLY_CONTRIBUTION_RATE
+            monthly_rate = projection_monthly_rate
+            target_amount = projection_target_amount
+
             time_to_target = project_time_to_target(
                 current_value=total_value,
                 monthly_contribution=monthly_rate,
-                target_amount=TARGET_AMOUNT
+                target_amount=target_amount
             )
             time_to_target_text = format_time_to_target(time_to_target)
 
@@ -444,12 +470,19 @@ if search and not members_df.empty:
             st.write(f"**Portfolio Value:** {total_value:,.2f}")
             st.write(f"**Contribution Ratio:** {ratio:.4%}")
             st.write(f"**Monthly Contribution Rate:** {monthly_rate:,.2f}")
-            st.write(f"**Target Amount:** {TARGET_AMOUNT:,.2f}")
+            st.write(f"**Target Amount:** {target_amount:,.2f}")
             st.write(f"**Estimated Time to Reach Target:** {time_to_target_text}")
 
             st.dataframe(display_ledger, width="stretch")
 
-            pdf = generate_unified_pdf(m["member_id"], m["name"], ledger, ratio)
+            pdf = generate_unified_pdf(
+                m["member_id"],
+                m["name"],
+                ledger,
+                ratio,
+                projection_monthly_rate,
+                projection_target_amount
+            )
             st.download_button(
                 "Download Member Statement (PDF)",
                 pdf,
@@ -494,7 +527,9 @@ if st.button("Generate All Member Statements") and not members_df.empty:
             member_id,
             data["name"],
             data["ledger"],
-            ratio
+            ratio,
+            projection_monthly_rate,
+            projection_target_amount
         )
 
         st.download_button(
