@@ -15,7 +15,7 @@ from supabase import create_client
 # ==========================================
 INTEREST_RATE = 0.085  # 8.5% annual
 COMPOUND_FREQUENCY = "daily"
-PARTNERSHIP_NAME = "Ndundu Partnership"
+PARTNERSHIP_NAME = "Ndundu Pride Investments LLP"
 
 # ==========================================
 # SUPABASE CLIENT
