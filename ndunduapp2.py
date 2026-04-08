@@ -16,6 +16,8 @@ from supabase import create_client
 INTEREST_RATE = 0.085  # 8.5% annual
 COMPOUND_FREQUENCY = "daily"
 PARTNERSHIP_NAME = "Ndundu Pride Investments LLP"
+TARGET_AMOUNT = 500000.00
+MONTHLY_CONTRIBUTION_RATE = 2000.00
 
 # ==========================================
 # SUPABASE CLIENT
@@ -96,6 +98,38 @@ def compute_all_member_totals(members_df, contributions_df):
 
     return member_data, grand_total
 
+def project_time_to_target(current_value, monthly_contribution, target_amount, annual_interest_rate=INTEREST_RATE):
+    if current_value >= target_amount:
+        return 0, 0, 0
+
+    if monthly_contribution <= 0 and current_value < target_amount:
+        return None
+
+    projected_value = current_value
+    months = 0
+    monthly_rate = annual_interest_rate / 12
+    max_months = 1200  # safety cap = 100 years
+
+    while projected_value < target_amount and months < max_months:
+        projected_value = projected_value * (1 + monthly_rate) + monthly_contribution
+        months += 1
+
+    if months >= max_months:
+        return None
+
+    years = months // 12
+    remaining_months = months % 12
+    days = 0
+
+    return years, remaining_months, days
+
+def format_time_to_target(time_tuple):
+    if time_tuple is None:
+        return "Target not reachable at current contribution rate"
+
+    years, months, days = time_tuple
+    return f"{years} years, {months} months, {days} days"
+
 # ==========================================
 # DATA ACCESS (SUPABASE)
 # ==========================================
@@ -154,7 +188,18 @@ class MemberStatementPDF(FPDF):
         self.set_font("Arial", "I", 8)
         self.cell(0, 6, f"Page {self.page_no()}", align="C")
 
-    def draw_summary_box(self, member_id, name, principal, interest, portfolio_value, ratio):
+    def draw_summary_box(
+        self,
+        member_id,
+        name,
+        principal,
+        interest,
+        portfolio_value,
+        ratio,
+        monthly_rate,
+        target_amount,
+        time_to_target_text
+    ):
         self.set_font("Arial", "B", 11)
         self.cell(0, 8, "Member Details", ln=True)
 
@@ -163,11 +208,9 @@ class MemberStatementPDF(FPDF):
 
         row_h = 8
         box_w = 190
-        box_h = row_h * 6
+        box_h = row_h * 9
 
         self.rect(left_x, start_y, box_w, box_h)
-
-        self.set_font("Arial", "", 10)
 
         rows = [
             ("Member Name", name),
@@ -175,7 +218,10 @@ class MemberStatementPDF(FPDF):
             ("Total Principal", f"{principal:,.2f}"),
             ("Total Interest", f"{interest:,.2f}"),
             ("Portfolio Value", f"{portfolio_value:,.2f}"),
-            ("Contribution Ratio", f"{ratio:.4%}")
+            ("Contribution Ratio", f"{ratio:.4%}"),
+            ("Monthly Contribution Rate", f"{monthly_rate:,.2f}"),
+            ("Target Amount", f"{target_amount:,.2f}"),
+            ("Time to Reach Target", time_to_target_text),
         ]
 
         label_w = 55
@@ -239,6 +285,14 @@ def generate_unified_pdf(member_id, name, ledger_df, ratio):
 
     total_principal, total_interest, portfolio_value = compute_member_totals(ledger_df)
 
+    monthly_rate = MONTHLY_CONTRIBUTION_RATE
+    time_to_target = project_time_to_target(
+        current_value=portfolio_value,
+        monthly_contribution=monthly_rate,
+        target_amount=TARGET_AMOUNT
+    )
+    time_to_target_text = format_time_to_target(time_to_target)
+
     pdf.set_font("Arial", "", 10)
     pdf.cell(0, 6, f"Generated on: {datetime.date.today().isoformat()}", ln=True)
     pdf.ln(2)
@@ -249,7 +303,10 @@ def generate_unified_pdf(member_id, name, ledger_df, ratio):
         principal=total_principal,
         interest=total_interest,
         portfolio_value=portfolio_value,
-        ratio=ratio
+        ratio=ratio,
+        monthly_rate=monthly_rate,
+        target_amount=TARGET_AMOUNT,
+        time_to_target_text=time_to_target_text
     )
 
     if not ledger_df.empty:
@@ -372,12 +429,23 @@ if search and not members_df.empty:
             member_data, grand_total = compute_all_member_totals(members_df, contributions_df)
             ratio = total_value / grand_total if grand_total else 0.0
 
+            monthly_rate = MONTHLY_CONTRIBUTION_RATE
+            time_to_target = project_time_to_target(
+                current_value=total_value,
+                monthly_contribution=monthly_rate,
+                target_amount=TARGET_AMOUNT
+            )
+            time_to_target_text = format_time_to_target(time_to_target)
+
             st.write(f"**Member Name:** {m['name']}")
             st.write(f"**Member ID:** {m['member_id']}")
             st.write(f"**Total Principal:** {principal:,.2f}")
             st.write(f"**Total Interest:** {interest:,.2f}")
             st.write(f"**Portfolio Value:** {total_value:,.2f}")
             st.write(f"**Contribution Ratio:** {ratio:.4%}")
+            st.write(f"**Monthly Contribution Rate:** {monthly_rate:,.2f}")
+            st.write(f"**Target Amount:** {TARGET_AMOUNT:,.2f}")
+            st.write(f"**Estimated Time to Reach Target:** {time_to_target_text}")
 
             st.dataframe(display_ledger, width="stretch")
 
