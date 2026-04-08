@@ -1,7 +1,6 @@
 # ==========================================
 # Member Contribution & Interest App
-# SUPABASE + Streamlit + PDF + Ledger
-# Fully Polished Version (FIXED – with Edit Contribution + Ledger Running Balance in PDF)
+# SUPABASE + Streamlit + Polished Unified PDF
 # ==========================================
 
 import streamlit as st
@@ -16,6 +15,7 @@ from supabase import create_client
 # ==========================================
 INTEREST_RATE = 0.085  # 8.5% annual
 COMPOUND_FREQUENCY = "daily"
+PARTNERSHIP_NAME = "Ndundu Partnership"
 
 # ==========================================
 # SUPABASE CLIENT
@@ -47,11 +47,54 @@ def compute_interest(amount, date):
 
     return total - amount
 
-def compute_totals(member_id, contributions_df):
-    df = contributions_df[contributions_df["member_id"] == member_id]
-    principal = df["amount"].sum()
-    interest = sum(compute_interest(r.amount, r.date) for r in df.itertuples())
-    return principal, interest, principal + interest
+def prepare_member_ledger(member_id, contributions_df):
+    ledger = contributions_df[contributions_df["member_id"] == member_id].copy()
+
+    if ledger.empty:
+        return pd.DataFrame(columns=[
+            "id", "member_id", "amount", "date",
+            "Interest", "Total Value", "Running Balance"
+        ])
+
+    ledger = ledger.sort_values("date").reset_index(drop=True)
+    ledger["Interest"] = ledger.apply(
+        lambda r: compute_interest(r["amount"], r["date"]), axis=1
+    )
+    ledger["Total Value"] = ledger["amount"] + ledger["Interest"]
+    ledger["Running Balance"] = ledger["Total Value"].cumsum()
+
+    return ledger
+
+def compute_member_totals(ledger_df):
+    if ledger_df.empty:
+        return 0.0, 0.0, 0.0
+
+    principal = ledger_df["amount"].sum()
+    interest = ledger_df["Interest"].sum()
+    total_value = ledger_df["Running Balance"].iloc[-1]
+    return principal, interest, total_value
+
+def compute_all_member_totals(members_df, contributions_df):
+    member_data = {}
+    grand_total = 0.0
+
+    for _, r in members_df.iterrows():
+        member_id = r["member_id"]
+        name = r["name"]
+
+        ledger = prepare_member_ledger(member_id, contributions_df)
+        principal, interest, total_value = compute_member_totals(ledger)
+
+        member_data[member_id] = {
+            "name": name,
+            "ledger": ledger,
+            "principal": principal,
+            "interest": interest,
+            "total_value": total_value
+        }
+        grand_total += total_value
+
+    return member_data, grand_total
 
 # ==========================================
 # DATA ACCESS (SUPABASE)
@@ -91,58 +134,133 @@ def update_contribution(contribution_id, amount, date):
     }).eq("id", contribution_id).execute()
 
 # ==========================================
-# PDF GENERATORS
+# PDF CLASS
 # ==========================================
-def generate_pdf(member_id, name, principal, interest, total_value, ratio):
-    pdf = FPDF()
+class MemberStatementPDF(FPDF):
+    def __init__(self, partnership_name, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.partnership_name = partnership_name
+        self.col_widths = [28, 35, 30, 35, 42]
+
+    def header(self):
+        self.set_font("Arial", "B", 14)
+        self.cell(0, 8, self.partnership_name, ln=True, align="C")
+        self.set_font("Arial", "", 10)
+        self.cell(0, 6, "Member Contribution Statement", ln=True, align="C")
+        self.ln(4)
+
+    def footer(self):
+        self.set_y(-12)
+        self.set_font("Arial", "I", 8)
+        self.cell(0, 6, f"Page {self.page_no()}", align="C")
+
+    def draw_summary_box(self, member_id, name, principal, interest, portfolio_value, ratio):
+        self.set_font("Arial", "B", 11)
+        self.cell(0, 8, "Member Details", ln=True)
+
+        left_x = self.get_x()
+        start_y = self.get_y()
+
+        row_h = 8
+        box_w = 190
+        box_h = row_h * 6
+
+        self.rect(left_x, start_y, box_w, box_h)
+
+        self.set_font("Arial", "", 10)
+
+        rows = [
+            ("Member Name", name),
+            ("Member ID", str(member_id)),
+            ("Total Principal", f"{principal:,.2f}"),
+            ("Total Interest", f"{interest:,.2f}"),
+            ("Portfolio Value", f"{portfolio_value:,.2f}"),
+            ("Contribution Ratio", f"{ratio:.4%}")
+        ]
+
+        label_w = 55
+        value_w = 135
+
+        current_y = start_y
+        for label, value in rows:
+            self.set_xy(left_x, current_y)
+            self.set_font("Arial", "B", 10)
+            self.cell(label_w, row_h, label, border=1)
+            self.set_font("Arial", "", 10)
+            self.cell(value_w, row_h, value, border=1, ln=True)
+            current_y += row_h
+
+        self.ln(5)
+
+    def draw_table_header(self):
+        self.set_font("Arial", "B", 9)
+        headers = ["Date", "Principal", "Interest", "Total Value", "Running Balance"]
+        for i, header in enumerate(headers):
+            self.cell(self.col_widths[i], 8, header, border=1, align="C")
+        self.ln()
+
+    def draw_ledger_table(self, ledger_df):
+        self.set_font("Arial", "B", 11)
+        self.cell(0, 8, "Transaction History", ln=True)
+
+        self.draw_table_header()
+        self.set_font("Arial", "", 9)
+
+        row_height = 8
+
+        for _, r in ledger_df.iterrows():
+            if self.get_y() > 265:
+                self.add_page()
+                self.set_font("Arial", "B", 11)
+                self.cell(0, 8, "Transaction History (continued)", ln=True)
+                self.draw_table_header()
+                self.set_font("Arial", "", 9)
+
+            values = [
+                str(r["date"]),
+                f"{r['amount']:,.2f}",
+                f"{r['Interest']:,.2f}",
+                f"{r['Total Value']:,.2f}",
+                f"{r['Running Balance']:,.2f}"
+            ]
+
+            for i, value in enumerate(values):
+                align = "L" if i == 0 else "R"
+                self.cell(self.col_widths[i], row_height, value, border=1, align=align)
+            self.ln()
+
+# ==========================================
+# UNIFIED PDF GENERATOR
+# ==========================================
+def generate_unified_pdf(member_id, name, ledger_df, ratio):
+    pdf = MemberStatementPDF(PARTNERSHIP_NAME)
+    pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
-    pdf.set_font("Arial", size=12)
 
-    pdf.cell(200, 10, f"Member Statement - {name}", ln=True)
-    pdf.cell(200, 10, f"Member ID: {member_id}", ln=True)
-    pdf.ln(5)
-    pdf.cell(200, 10, f"Total Principal: {principal:,.2f}", ln=True)
-    pdf.cell(200, 10, f"Total Interest: {interest:,.2f}", ln=True)
-    pdf.cell(200, 10, f"Portfolio Value: {total_value:,.2f}", ln=True)
-    pdf.cell(200, 10, f"Contribution Ratio: {ratio:.4%}", ln=True)
-    pdf.ln(15)
-    pdf.set_font("Arial", style="B")
-    pdf.cell(200, 10, "Signature: ____________________________", ln=True)
+    total_principal, total_interest, portfolio_value = compute_member_totals(ledger_df)
 
-    return BytesIO(pdf.output(dest="S").encode("latin1"))
+    pdf.set_font("Arial", "", 10)
+    pdf.cell(0, 6, f"Generated on: {datetime.date.today().isoformat()}", ln=True)
+    pdf.ln(2)
 
-def generate_ledger_pdf(member_id, name, ledger_df):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", size=11)
+    pdf.draw_summary_box(
+        member_id=member_id,
+        name=name,
+        principal=total_principal,
+        interest=total_interest,
+        portfolio_value=portfolio_value,
+        ratio=ratio
+    )
 
-    pdf.cell(200, 8, "Member Ledger Statement", ln=True)
-    pdf.cell(200, 8, f"Member Name: {name}", ln=True)
-    pdf.cell(200, 8, f"Member ID: {member_id}", ln=True)
-    pdf.ln(5)
+    if not ledger_df.empty:
+        pdf.draw_ledger_table(ledger_df)
+    else:
+        pdf.set_font("Arial", "I", 10)
+        pdf.cell(0, 8, "No contribution records available for this member.", ln=True)
 
-    pdf.set_font("Arial", style="B", size=10)
-    pdf.cell(35, 8, "Date", border=1)
-    pdf.cell(45, 8, "Principal", border=1)
-    pdf.cell(45, 8, "Interest", border=1)
-    pdf.cell(40, 8, "Total Value", border=1)
-    pdf.cell(40, 8, "Running Balance", border=1, ln=True)
-
-    pdf.set_font("Arial", size=10)
-    for _, r in ledger_df.iterrows():
-        pdf.cell(35, 8, str(r["date"]), border=1)
-        pdf.cell(45, 8, f"{r['amount']:,.2f}", border=1)
-        pdf.cell(45, 8, f"{r['Interest']:,.2f}", border=1)
-        pdf.cell(40, 8, f"{r['Total Value']:,.2f}", border=1)
-        pdf.cell(40, 8, f"{r['Running Balance']:,.2f}", border=1, ln=True)
-
-    pdf.ln(5)
-    pdf.set_font("Arial", style="B", size=11)
-    pdf.cell(200, 8, f"Total Principal: {ledger_df['amount'].sum():,.2f}", ln=True)
-    pdf.cell(200, 8, f"Total Interest: {ledger_df['Interest'].sum():,.2f}", ln=True)
-    pdf.cell(200, 8, f"Grand Total: {ledger_df['Total Value'].sum():,.2f}", ln=True)
     pdf.ln(10)
-    pdf.cell(200, 8, "Signature: ____________________________", ln=True)
+    pdf.set_font("Arial", "B", 11)
+    pdf.cell(0, 8, "Signature: ____________________________", ln=True)
 
     return BytesIO(pdf.output(dest="S").encode("latin1"))
 
@@ -182,7 +300,7 @@ if not members_df.empty:
     with st.form("add_contribution"):
         member_options = [f"{r['member_id']} - {r['name']}" for _, r in members_df.iterrows()]
         selected = st.selectbox("Select Member", member_options)
-        c_member_id, c_member_name = selected.split(" - ")
+        c_member_id, c_member_name = selected.split(" - ", 1)
 
         amount = st.number_input("Amount", min_value=1.0)
         date = st.date_input("Date")
@@ -196,7 +314,7 @@ else:
     st.info("Add members first")
 
 # ------------------------------------------
-# CONTRIBUTION SUMMARY (FORMATTED NUMBERS)
+# CONTRIBUTION SUMMARY
 # ------------------------------------------
 st.subheader("Contribution Summary (Including Interest)")
 if not contributions_df.empty:
@@ -217,7 +335,6 @@ if not contributions_df.empty:
         display_summary[col] = display_summary[col].map(lambda x: f"{x:,.2f}")
 
     st.dataframe(display_summary, width="stretch")
-
     st.metric("Total Principal", f"{summary['amount'].sum():,.2f}")
     st.metric("Total Interest", f"{summary['Interest'].sum():,.2f}")
     st.metric("Grand Total", f"{summary['Total Value'].sum():,.2f}")
@@ -225,57 +342,62 @@ else:
     st.info("No contributions yet")
 
 # ------------------------------------------
-# MEMBER LEDGER STATEMENT (WITH RUNNING BALANCE)
+# MEMBER STATEMENT
 # ------------------------------------------
-st.subheader("Member Ledger Statement")
+st.subheader("Member Statement")
 search = st.text_input("Search by Member ID or Name")
 
 if search and not members_df.empty:
     match = members_df[
-        members_df["member_id"].str.contains(search, case=False) |
-        members_df["name"].str.contains(search, case=False)
+        members_df["member_id"].astype(str).str.contains(search, case=False, na=False) |
+        members_df["name"].astype(str).str.contains(search, case=False, na=False)
     ]
 
     if not match.empty:
         m = match.iloc[0]
-        ledger = fetch_contributions(m["member_id"])
+        ledger = prepare_member_ledger(m["member_id"], contributions_df)
 
         if not ledger.empty:
-            ledger = ledger.sort_values("date")
-
-            ledger["Interest"] = ledger.apply(lambda r: compute_interest(r["amount"], r["date"]), axis=1)
-            ledger["Total Value"] = ledger["amount"] + ledger["Interest"]
-
-            # ✅ Running Balance
-            ledger["Running Balance"] = ledger["Total Value"].cumsum()
-
             display_ledger = ledger[
                 ["date", "amount", "Interest", "Total Value", "Running Balance"]
             ].rename(columns={
                 "date": "Date",
                 "amount": "Principal"
-            })
+            }).copy()
 
             for col in ["Principal", "Interest", "Total Value", "Running Balance"]:
                 display_ledger[col] = display_ledger[col].map(lambda x: f"{x:,.2f}")
 
+            principal, interest, total_value = compute_member_totals(ledger)
+            member_data, grand_total = compute_all_member_totals(members_df, contributions_df)
+            ratio = total_value / grand_total if grand_total else 0.0
+
+            st.write(f"**Member Name:** {m['name']}")
+            st.write(f"**Member ID:** {m['member_id']}")
+            st.write(f"**Total Principal:** {principal:,.2f}")
+            st.write(f"**Total Interest:** {interest:,.2f}")
+            st.write(f"**Portfolio Value:** {total_value:,.2f}")
+            st.write(f"**Contribution Ratio:** {ratio:.4%}")
+
             st.dataframe(display_ledger, width="stretch")
 
-            pdf = generate_ledger_pdf(m["member_id"], m["name"], ledger)
+            pdf = generate_unified_pdf(m["member_id"], m["name"], ledger, ratio)
             st.download_button(
-                "Download Ledger Statement (PDF)",
+                "Download Member Statement (PDF)",
                 pdf,
-                f"ledger_{m['member_id']}.pdf",
+                f"statement_{m['member_id']}.pdf",
                 "application/pdf"
             )
 
+            ledger = ledger.copy()
             ledger["label"] = ledger.apply(
                 lambda r: f"ID {r['id']} | {r['date']} | {r['amount']:,.2f}",
                 axis=1
             )
+
             selected = st.selectbox("Select contribution to edit", ledger["label"])
             selected_id = selected.split("|")[0].replace("ID", "").strip()
-            row = ledger[ledger["id"] == selected_id].iloc[0]
+            row = ledger[ledger["id"].astype(str) == str(selected_id)].iloc[0]
 
             with st.form("edit_contribution"):
                 new_amount = st.number_input("Amount", value=float(row["amount"]), min_value=1.0)
@@ -286,6 +408,8 @@ if search and not members_df.empty:
                     update_contribution(selected_id, new_amount, new_date)
                     st.success("Contribution updated successfully")
                     st.rerun()
+        else:
+            st.info("This member has no contributions yet")
     else:
         st.warning("No matching member found")
 
@@ -294,20 +418,19 @@ if search and not members_df.empty:
 # ------------------------------------------
 st.subheader("Generate All Member Statements")
 if st.button("Generate All Member Statements") and not members_df.empty:
-    grand_total = 0
-    totals = {}
+    member_data, grand_total = compute_all_member_totals(members_df, contributions_df)
 
-    for _, r in members_df.iterrows():
-        p, i, t = compute_totals(r["member_id"], contributions_df)
-        totals[r["member_id"]] = (r["name"], p, i, t)
-        grand_total += t
-
-    for member_id, (name, p, i, t) in totals.items():
-        ratio = t / grand_total if grand_total else 0
-        pdf = generate_pdf(member_id, name, p, i, t, ratio)
+    for member_id, data in member_data.items():
+        ratio = data["total_value"] / grand_total if grand_total else 0.0
+        pdf = generate_unified_pdf(
+            member_id,
+            data["name"],
+            data["ledger"],
+            ratio
+        )
 
         st.download_button(
-            f"Download Statement – {name}",
+            f"Download Statement – {data['name']}",
             pdf,
             f"statement_{member_id}.pdf",
             "application/pdf"
