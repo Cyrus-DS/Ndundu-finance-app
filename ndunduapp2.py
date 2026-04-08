@@ -1,6 +1,5 @@
 # ==========================================
 # Member Contribution & Interest App
-# SUPABASE + Streamlit + Polished Unified PDF
 # ==========================================
 
 import streamlit as st
@@ -13,14 +12,14 @@ from supabase import create_client
 # ==========================================
 # CONFIG
 # ==========================================
-INTEREST_RATE = 0.085  # 8.5% annual
+INTEREST_RATE = 0.085
 COMPOUND_FREQUENCY = "daily"
 PARTNERSHIP_NAME = "Ndundu Pride Investments LLP"
 TARGET_AMOUNT = 500000.00
 MONTHLY_CONTRIBUTION_RATE = 2000.00
 
 # ==========================================
-# SUPABASE CLIENT
+# SUPABASE
 # ==========================================
 @st.cache_resource
 def get_supabase():
@@ -49,23 +48,20 @@ def compute_interest(amount, date):
 
     return total - amount
 
+
 def prepare_member_ledger(member_id, contributions_df):
     ledger = contributions_df[contributions_df["member_id"] == member_id].copy()
 
     if ledger.empty:
-        return pd.DataFrame(columns=[
-            "id", "member_id", "amount", "date",
-            "Interest", "Total Value", "Running Balance"
-        ])
+        return pd.DataFrame()
 
     ledger = ledger.sort_values("date").reset_index(drop=True)
-    ledger["Interest"] = ledger.apply(
-        lambda r: compute_interest(r["amount"], r["date"]), axis=1
-    )
+    ledger["Interest"] = ledger.apply(lambda r: compute_interest(r["amount"], r["date"]), axis=1)
     ledger["Total Value"] = ledger["amount"] + ledger["Interest"]
     ledger["Running Balance"] = ledger["Total Value"].cumsum()
 
     return ledger
+
 
 def compute_member_totals(ledger_df):
     if ledger_df.empty:
@@ -74,119 +70,68 @@ def compute_member_totals(ledger_df):
     principal = ledger_df["amount"].sum()
     interest = ledger_df["Interest"].sum()
     current_total_value = ledger_df["Running Balance"].iloc[-1]
+
     return principal, interest, current_total_value
+
 
 def compute_all_member_totals(members_df, contributions_df):
     member_data = {}
     grand_total = 0.0
 
     for _, r in members_df.iterrows():
-        member_id = r["member_id"]
-        name = r["name"]
+        ledger = prepare_member_ledger(r["member_id"], contributions_df)
+        p, i, total = compute_member_totals(ledger)
 
-        ledger = prepare_member_ledger(member_id, contributions_df)
-        principal, interest, current_total_value = compute_member_totals(ledger)
-
-        member_data[member_id] = {
-            "name": name,
+        member_data[r["member_id"]] = {
+            "name": r["name"],
             "ledger": ledger,
-            "principal": principal,
-            "interest": interest,
-            "total_value": current_total_value
+            "principal": p,
+            "interest": i,
+            "total_value": total
         }
-        grand_total += current_total_value
+
+        grand_total += total
 
     return member_data, grand_total
 
-def project_time_to_target(current_value, monthly_contribution, target_amount, annual_interest_rate=INTEREST_RATE):
+
+def project_time_to_target(current_value, monthly_contribution, target_amount):
     if current_value >= target_amount:
-        return 0, 0, 0
+        return (0, 0, 0)
 
-    if monthly_contribution <= 0 and current_value < target_amount:
-        return None
-
-    projected_value = current_value
+    monthly_rate = INTEREST_RATE / 12
     months = 0
-    monthly_rate = annual_interest_rate / 12
-    max_months = 1200  # safety cap = 100 years
+    value = current_value
 
-    while projected_value < target_amount and months < max_months:
-        projected_value = projected_value * (1 + monthly_rate) + monthly_contribution
+    while value < target_amount and months < 1200:
+        value = value * (1 + monthly_rate) + monthly_contribution
         months += 1
-
-    if months >= max_months:
-        return None
 
     years = months // 12
     remaining_months = months % 12
-    days = 0
 
-    return years, remaining_months, days
+    return (years, remaining_months, 0)
 
-def format_time_to_target(time_tuple):
-    if time_tuple is None:
-        return "Target not reachable at current contribution rate"
 
-    years, months, days = time_tuple
-    return f"{years} years, {months} months, {days} days"
+def format_time_to_target(t):
+    return f"{t[0]} years, {t[1]} months, {t[2]} days"
+
 
 # ==========================================
-# DATA ACCESS (SUPABASE)
-# ==========================================
-def fetch_members():
-    res = supabase.table("members").select("*").execute()
-    return pd.DataFrame(res.data) if res.data else pd.DataFrame(columns=["member_id", "name"])
-
-def fetch_contributions(member_id=None):
-    query = supabase.table("contributions").select("id, member_id, amount, date")
-    if member_id:
-        query = query.eq("member_id", member_id)
-
-    res = query.execute()
-    df = pd.DataFrame(res.data) if res.data else pd.DataFrame(columns=["id", "member_id", "amount", "date"])
-    if not df.empty:
-        df["date"] = pd.to_datetime(df["date"]).dt.date
-    return df
-
-def add_member(member_id, name):
-    supabase.table("members").insert({
-        "member_id": member_id,
-        "name": name.strip()
-    }).execute()
-
-def add_contribution(member_id, amount, date):
-    supabase.table("contributions").insert({
-        "member_id": member_id,
-        "amount": amount,
-        "date": date.isoformat()
-    }).execute()
-
-def update_contribution(contribution_id, amount, date):
-    supabase.table("contributions").update({
-        "amount": amount,
-        "date": date.isoformat()
-    }).eq("id", contribution_id).execute()
-
-# ==========================================
-# PDF CLASS
+# PDF
 # ==========================================
 class MemberStatementPDF(FPDF):
-    def __init__(self, partnership_name, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.partnership_name = partnership_name
-        self.col_widths = [28, 35, 30, 35, 42]
+
+    def __init__(self, name):
+        super().__init__()
+        self.name = name
 
     def header(self):
         self.set_font("Arial", "B", 14)
-        self.cell(0, 8, self.partnership_name, ln=True, align="C")
+        self.cell(0, 8, PARTNERSHIP_NAME, ln=True, align="C")
         self.set_font("Arial", "", 10)
         self.cell(0, 6, "Member Contribution Statement", ln=True, align="C")
-        self.ln(4)
-
-    def footer(self):
-        self.set_y(-12)
-        self.set_font("Arial", "I", 8)
-        self.cell(0, 6, f"Page {self.page_no()}", align="C")
+        self.ln(5)
 
     def draw_summary_box(
         self,
@@ -204,352 +149,150 @@ class MemberStatementPDF(FPDF):
         self.set_font("Arial", "B", 11)
         self.cell(0, 8, "Member Details", ln=True)
 
-        left_x = self.get_x()
-        start_y = self.get_y()
-
         row_h = 8
         box_w = 190
-        box_h = row_h * 10
+        box_h = row_h * 11
 
-        self.rect(left_x, start_y, box_w, box_h)
+        x = self.get_x()
+        y = self.get_y()
+
+        self.rect(x, y, box_w, box_h)
 
         rows = [
             ("Member Name", name),
-            ("Member ID", str(member_id)),
+            ("Member ID", member_id),
             ("Total Principal", f"{principal:,.2f}"),
             ("Total Interest", f"{interest:,.2f}"),
             ("Current Total Value", f"{current_total_value:,.2f}"),
             ("Contribution Ratio", f"{ratio:.4%}"),
+            ("Projections", ""),
             ("Monthly Contribution Rate", f"{monthly_rate:,.2f}"),
             ("Target Amount", f"{target_amount:,.2f}"),
             ("General Total Start Value", f"{projection_start_value:,.2f}"),
             ("Time to Reach Target", time_to_target_text),
         ]
 
-        label_w = 60
-        value_w = 130
-
-        current_y = start_y
         for label, value in rows:
-            self.set_xy(left_x, current_y)
-            self.set_font("Arial", "B", 10)
-            self.cell(label_w, row_h, label, border=1)
-            self.set_font("Arial", "", 10)
-            self.cell(value_w, row_h, value, border=1, ln=True)
-            current_y += row_h
+            self.set_x(x)
 
+            if label == "Projections":
+                self.set_font("Arial", "B", 10)
+                self.cell(190, row_h, label, border=1, ln=True, align="C")
+            else:
+                self.set_font("Arial", "B", 10)
+                self.cell(60, row_h, label, border=1)
+                self.set_font("Arial", "", 10)
+                self.cell(130, row_h, str(value), border=1, ln=True)
+
+    def draw_ledger(self, df):
         self.ln(5)
-
-    def draw_table_header(self):
-        self.set_font("Arial", "B", 9)
-        headers = ["Date", "Principal", "Interest", "Total Value", "Running Balance"]
-        for i, header in enumerate(headers):
-            self.cell(self.col_widths[i], 8, header, border=1, align="C")
-        self.ln()
-
-    def draw_ledger_table(self, ledger_df):
         self.set_font("Arial", "B", 11)
         self.cell(0, 8, "Transaction History", ln=True)
 
-        self.draw_table_header()
+        self.set_font("Arial", "B", 9)
+        headers = ["Date", "Principal", "Interest", "Total", "Balance"]
+
+        widths = [30, 30, 30, 40, 40]
+
+        for i, h in enumerate(headers):
+            self.cell(widths[i], 8, h, border=1, align="C")
+        self.ln()
+
         self.set_font("Arial", "", 9)
 
-        row_height = 8
-
-        for _, r in ledger_df.iterrows():
-            if self.get_y() > 265:
-                self.add_page()
-                self.set_font("Arial", "B", 11)
-                self.cell(0, 8, "Transaction History (continued)", ln=True)
-                self.draw_table_header()
-                self.set_font("Arial", "", 9)
-
-            values = [
-                str(r["date"]),
-                f"{r['amount']:,.2f}",
-                f"{r['Interest']:,.2f}",
-                f"{r['Total Value']:,.2f}",
-                f"{r['Running Balance']:,.2f}"
-            ]
-
-            for i, value in enumerate(values):
-                align = "L" if i == 0 else "R"
-                self.cell(self.col_widths[i], row_height, value, border=1, align=align)
+        for _, r in df.iterrows():
+            self.cell(30, 8, str(r["date"]), border=1)
+            self.cell(30, 8, f"{r['amount']:,.2f}", border=1)
+            self.cell(30, 8, f"{r['Interest']:,.2f}", border=1)
+            self.cell(40, 8, f"{r['Total Value']:,.2f}", border=1)
+            self.cell(40, 8, f"{r['Running Balance']:,.2f}", border=1)
             self.ln()
 
-# ==========================================
-# UNIFIED PDF GENERATOR
-# ==========================================
-def generate_unified_pdf(
-    member_id,
-    name,
-    ledger_df,
-    ratio,
-    monthly_rate,
-    target_amount,
-    projection_start_value
-):
-    pdf = MemberStatementPDF(PARTNERSHIP_NAME)
-    pdf.set_auto_page_break(auto=True, margin=15)
+
+def generate_pdf(member_id, name, ledger, ratio, monthly_rate, target_amount, grand_total):
+    pdf = MemberStatementPDF(name)
     pdf.add_page()
 
-    total_principal, total_interest, current_total_value = compute_member_totals(ledger_df)
+    p, i, total = compute_member_totals(ledger)
 
-    time_to_target = project_time_to_target(
-        current_value=projection_start_value,
-        monthly_contribution=monthly_rate,
-        target_amount=target_amount
-    )
-    time_to_target_text = format_time_to_target(time_to_target)
-
-    pdf.set_font("Arial", "", 10)
-    pdf.cell(0, 6, f"Generated on: {datetime.date.today().isoformat()}", ln=True)
-    pdf.ln(2)
+    time = project_time_to_target(grand_total, monthly_rate, target_amount)
+    time_text = format_time_to_target(time)
 
     pdf.draw_summary_box(
-        member_id=member_id,
-        name=name,
-        principal=total_principal,
-        interest=total_interest,
-        current_total_value=current_total_value,
-        ratio=ratio,
-        monthly_rate=monthly_rate,
-        target_amount=target_amount,
-        projection_start_value=projection_start_value,
-        time_to_target_text=time_to_target_text
+        member_id,
+        name,
+        p,
+        i,
+        total,
+        ratio,
+        monthly_rate,
+        target_amount,
+        grand_total,
+        time_text
     )
 
-    if not ledger_df.empty:
-        pdf.draw_ledger_table(ledger_df)
-    else:
-        pdf.set_font("Arial", "I", 10)
-        pdf.cell(0, 8, "No contribution records available for this member.", ln=True)
-
-    pdf.ln(10)
-    pdf.set_font("Arial", "B", 11)
-    pdf.cell(0, 8, "Signature: ____________________________", ln=True)
+    if not ledger.empty:
+        pdf.draw_ledger(ledger)
 
     return BytesIO(pdf.output(dest="S").encode("latin1"))
 
-# ==========================================
-# STREAMLIT UI
-# ==========================================
-st.title("Member Contribution & Interest App")
 
-members_df = fetch_members()
-contributions_df = fetch_contributions()
+# ==========================================
+# UI
+# ==========================================
+st.title("Ndundu Finance App")
+
+members = supabase.table("members").select("*").execute().data
+contributions = supabase.table("contributions").select("*").execute().data
+
+members_df = pd.DataFrame(members)
+contributions_df = pd.DataFrame(contributions)
+
+if not contributions_df.empty:
+    contributions_df["date"] = pd.to_datetime(contributions_df["date"]).dt.date
+
 member_data, grand_total = compute_all_member_totals(members_df, contributions_df)
 
-# ------------------------------------------
-# PROJECTION SETTINGS
-# ------------------------------------------
+# Projection Inputs
 st.subheader("Projection Settings")
 
 col1, col2 = st.columns(2)
 
 with col1:
-    projection_monthly_rate = st.number_input(
-        "Monthly Contribution Rate",
-        min_value=0.0,
-        value=float(MONTHLY_CONTRIBUTION_RATE),
-        step=100.0,
-        format="%.2f"
-    )
+    projection_monthly_rate = st.number_input("Monthly Contribution Rate", value=MONTHLY_CONTRIBUTION_RATE)
 
 with col2:
-    projection_target_amount = st.number_input(
-        "Target Amount",
-        min_value=0.0,
-        value=float(TARGET_AMOUNT),
-        step=1000.0,
-        format="%.2f"
-    )
+    projection_target_amount = st.number_input("Target Amount", value=TARGET_AMOUNT)
 
-# ------------------------------------------
-# ADD MEMBER
-# ------------------------------------------
-st.subheader("Add Member")
-with st.form("add_member"):
-    member_id = st.text_input("Member ID")
-    name = st.text_input("Name")
-    submit = st.form_submit_button("Add Member")
+# Member Statement
+search = st.text_input("Search Member")
 
-    if submit:
-        if not member_id or not name:
-            st.error("All fields required")
-        else:
-            try:
-                add_member(member_id, name)
-                st.success(f"Member '{name}' added")
-                st.rerun()
-            except Exception:
-                st.error("Member ID already exists")
-
-# ------------------------------------------
-# ADD CONTRIBUTION
-# ------------------------------------------
-st.subheader("Add Contribution")
-if not members_df.empty:
-    with st.form("add_contribution"):
-        member_options = [f"{r['member_id']} - {r['name']}" for _, r in members_df.iterrows()]
-        selected = st.selectbox("Select Member", member_options)
-        c_member_id, c_member_name = selected.split(" - ", 1)
-
-        amount = st.number_input("Amount", min_value=1.0)
-        date = st.date_input("Date")
-        submit_c = st.form_submit_button("Add Contribution")
-
-        if submit_c:
-            add_contribution(c_member_id, amount, date)
-            st.success(f"Contribution added for {c_member_name}")
-            st.rerun()
-else:
-    st.info("Add members first")
-
-# ------------------------------------------
-# CONTRIBUTION SUMMARY
-# ------------------------------------------
-st.subheader("Contribution Summary (Including Interest)")
-if not contributions_df.empty:
-    summary = contributions_df.merge(members_df, on="member_id", how="left")
-    summary["Interest"] = summary.apply(lambda r: compute_interest(r["amount"], r["date"]), axis=1)
-    summary["Total Value"] = summary["amount"] + summary["Interest"]
-
-    display_summary = summary[
-        ["member_id", "name", "date", "amount", "Interest", "Total Value"]
-    ].rename(columns={
-        "member_id": "Member ID",
-        "name": "Member Name",
-        "date": "Date",
-        "amount": "Principal"
-    })
-
-    for col in ["Principal", "Interest", "Total Value"]:
-        display_summary[col] = display_summary[col].map(lambda x: f"{x:,.2f}")
-
-    st.dataframe(display_summary, width="stretch")
-    st.metric("Total Principal", f"{summary['amount'].sum():,.2f}")
-    st.metric("Total Interest", f"{summary['Interest'].sum():,.2f}")
-    st.metric("Grand Total", f"{summary['Total Value'].sum():,.2f}")
-else:
-    st.info("No contributions yet")
-
-# ------------------------------------------
-# MEMBER STATEMENT
-# ------------------------------------------
-st.subheader("Member Statement")
-search = st.text_input("Search by Member ID or Name")
-
-if search and not members_df.empty:
-    match = members_df[
-        members_df["member_id"].astype(str).str.contains(search, case=False, na=False) |
-        members_df["name"].astype(str).str.contains(search, case=False, na=False)
-    ]
+if search:
+    match = members_df[members_df["name"].str.contains(search, case=False)]
 
     if not match.empty:
         m = match.iloc[0]
         ledger = prepare_member_ledger(m["member_id"], contributions_df)
 
-        if not ledger.empty:
-            display_ledger = ledger[
-                ["date", "amount", "Interest", "Total Value", "Running Balance"]
-            ].rename(columns={
-                "date": "Date",
-                "amount": "Principal"
-            }).copy()
+        p, i, total = compute_member_totals(ledger)
+        ratio = total / grand_total if grand_total else 0
 
-            for col in ["Principal", "Interest", "Total Value", "Running Balance"]:
-                display_ledger[col] = display_ledger[col].map(lambda x: f"{x:,.2f}")
+        time = project_time_to_target(grand_total, projection_monthly_rate, projection_target_amount)
+        time_text = format_time_to_target(time)
 
-            principal, interest, current_total_value = compute_member_totals(ledger)
-            ratio = current_total_value / grand_total if grand_total else 0.0
+        st.write(f"**Name:** {m['name']}")
+        st.write(f"**Current Total:** {total:,.2f}")
+        st.write(f"**Group Total:** {grand_total:,.2f}")
+        st.write(f"**Projection Time:** {time_text}")
 
-            monthly_rate = projection_monthly_rate
-            target_amount = projection_target_amount
-            projection_start_value = grand_total
-
-            time_to_target = project_time_to_target(
-                current_value=projection_start_value,
-                monthly_contribution=monthly_rate,
-                target_amount=target_amount
-            )
-            time_to_target_text = format_time_to_target(time_to_target)
-
-            st.write(f"**Member Name:** {m['name']}")
-            st.write(f"**Member ID:** {m['member_id']}")
-            st.write(f"**Total Principal:** {principal:,.2f}")
-            st.write(f"**Total Interest:** {interest:,.2f}")
-            st.write(f"**Current Total Value:** {current_total_value:,.2f}")
-            st.write(f"**Contribution Ratio:** {ratio:.4%}")
-            st.write(f"**Monthly Contribution Rate:** {monthly_rate:,.2f}")
-            st.write(f"**Target Amount:** {target_amount:,.2f}")
-            st.write(f"**General Total Start Value:** {projection_start_value:,.2f}")
-            st.write(f"**Estimated Time to Reach Target:** {time_to_target_text}")
-
-            st.dataframe(display_ledger, width="stretch")
-
-            pdf = generate_unified_pdf(
-                m["member_id"],
-                m["name"],
-                ledger,
-                ratio,
-                projection_monthly_rate,
-                projection_target_amount,
-                grand_total
-            )
-            st.download_button(
-                "Download Member Statement (PDF)",
-                pdf,
-                f"statement_{m['member_id']}.pdf",
-                "application/pdf"
-            )
-
-            ledger = ledger.copy()
-            ledger["label"] = ledger.apply(
-                lambda r: f"ID {r['id']} | {r['date']} | {r['amount']:,.2f}",
-                axis=1
-            )
-
-            selected = st.selectbox("Select contribution to edit", ledger["label"])
-            selected_id = selected.split("|")[0].replace("ID", "").strip()
-            row = ledger[ledger["id"].astype(str) == str(selected_id)].iloc[0]
-
-            with st.form("edit_contribution"):
-                new_amount = st.number_input("Amount", value=float(row["amount"]), min_value=1.0)
-                new_date = st.date_input("Date", value=row["date"])
-                save = st.form_submit_button("Update Contribution")
-
-                if save:
-                    update_contribution(selected_id, new_amount, new_date)
-                    st.success("Contribution updated successfully")
-                    st.rerun()
-        else:
-            st.info("This member has no contributions yet")
-    else:
-        st.warning("No matching member found")
-
-# ------------------------------------------
-# GENERATE ALL MEMBER STATEMENTS
-# ------------------------------------------
-st.subheader("Generate All Member Statements")
-if st.button("Generate All Member Statements") and not members_df.empty:
-    for member_id, data in member_data.items():
-        ratio = data["total_value"] / grand_total if grand_total else 0.0
-        pdf = generate_unified_pdf(
-            member_id,
-            data["name"],
-            data["ledger"],
+        pdf = generate_pdf(
+            m["member_id"],
+            m["name"],
+            ledger,
             ratio,
             projection_monthly_rate,
             projection_target_amount,
             grand_total
         )
 
-        st.download_button(
-            f"Download Statement – {data['name']}",
-            pdf,
-            f"statement_{member_id}.pdf",
-            "application/pdf"
-        )
-
-    st.success("All statements generated successfully")
+        st.download_button("Download PDF", pdf, "statement.pdf")
