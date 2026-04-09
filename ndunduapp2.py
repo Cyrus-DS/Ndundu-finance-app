@@ -128,7 +128,7 @@ def project_time_to_target(current_value, monthly_contribution, target_amount, a
     projected_value = current_value
     months = 0
     monthly_rate = annual_interest_rate / 12
-    max_months = 1200  # safety cap = 100 years
+    max_months = 1200
 
     while projected_value < target_amount and months < max_months:
         projected_value = projected_value * (1 + monthly_rate) + monthly_contribution
@@ -546,12 +546,7 @@ if st.session_state.role == "super_admin":
 # MEMBER STATEMENT
 # ------------------------------------------
 st.subheader("Member Statement")
-
-if st.session_state.role == "super_admin":
-    search = st.text_input("Search by Member ID or Name")
-else:
-    search = st.session_state.member_id
-    st.info(f"Viewing statement for: {st.session_state.member_name} ({st.session_state.member_id})")
+search = st.text_input("Search by Member ID or Name")
 
 if search and not members_df.empty:
     match = members_df[
@@ -560,117 +555,110 @@ if search and not members_df.empty:
     ]
 
     if not match.empty:
-        if st.session_state.role == "member":
-            match = match[match["member_id"].astype(str) == st.session_state.member_id]
+        m = match.iloc[0]
+        ledger = prepare_member_ledger(str(m["member_id"]), contributions_df)
 
-        if not match.empty:
-            m = match.iloc[0]
-            ledger = prepare_member_ledger(str(m["member_id"]), contributions_df)
+        if not ledger.empty:
+            display_ledger = ledger[
+                ["date", "amount", "Interest", "Total Value", "Running Balance"]
+            ].rename(columns={
+                "date": "Date",
+                "amount": "Principal"
+            }).copy()
 
-            if not ledger.empty:
-                display_ledger = ledger[
-                    ["date", "amount", "Interest", "Total Value", "Running Balance"]
-                ].rename(columns={
-                    "date": "Date",
-                    "amount": "Principal"
-                }).copy()
+            for col in ["Principal", "Interest", "Total Value", "Running Balance"]:
+                display_ledger[col] = display_ledger[col].map(lambda x: f"{x:,.2f}")
 
-                for col in ["Principal", "Interest", "Total Value", "Running Balance"]:
-                    display_ledger[col] = display_ledger[col].map(lambda x: f"{x:,.2f}")
+            principal, interest, current_total_value = compute_member_totals(ledger)
+            ratio = current_total_value / grand_total if grand_total else 0.0
 
-                principal, interest, current_total_value = compute_member_totals(ledger)
-                ratio = current_total_value / grand_total if grand_total else 0.0
+            monthly_rate = projection_monthly_rate
+            target_amount = projection_target_amount
+            projection_start_value = grand_total
 
-                monthly_rate = projection_monthly_rate
-                target_amount = projection_target_amount
-                projection_start_value = grand_total
+            time_to_target = project_time_to_target(
+                current_value=projection_start_value,
+                monthly_contribution=monthly_rate,
+                target_amount=target_amount
+            )
+            time_to_target_text = format_time_to_target(time_to_target)
 
-                time_to_target = project_time_to_target(
-                    current_value=projection_start_value,
-                    monthly_contribution=monthly_rate,
-                    target_amount=target_amount
+            st.write(f"**Member Name:** {m['name']}")
+            st.write(f"**Member ID:** {m['member_id']}")
+            st.write(f"**Total Principal:** {principal:,.2f}")
+            st.write(f"**Total Interest:** {interest:,.2f}")
+            st.write(f"**Current Total Value:** {current_total_value:,.2f}")
+            st.write(f"**Contribution Ratio:** {ratio:.4%}")
+            st.write(f"**Monthly Contribution Rate:** {monthly_rate:,.2f}")
+            st.write(f"**Target Amount:** {target_amount:,.2f}")
+            st.write(f"**General Total Start Value:** {projection_start_value:,.2f}")
+            st.write(f"**Estimated Time to Reach Target:** {time_to_target_text}")
+
+            st.dataframe(display_ledger, width="stretch")
+
+            pdf = generate_unified_pdf(
+                m["member_id"],
+                m["name"],
+                ledger,
+                ratio,
+                projection_monthly_rate,
+                projection_target_amount,
+                grand_total
+            )
+            st.download_button(
+                "Download Member Statement (PDF)",
+                pdf,
+                f"statement_{m['member_id']}.pdf",
+                "application/pdf"
+            )
+
+            if st.session_state.role == "super_admin":
+                ledger = ledger.copy()
+                ledger["label"] = ledger.apply(
+                    lambda r: f"ID {r['id']} | {r['date']} | {r['amount']:,.2f}",
+                    axis=1
                 )
-                time_to_target_text = format_time_to_target(time_to_target)
 
-                st.write(f"**Member Name:** {m['name']}")
-                st.write(f"**Member ID:** {m['member_id']}")
-                st.write(f"**Total Principal:** {principal:,.2f}")
-                st.write(f"**Total Interest:** {interest:,.2f}")
-                st.write(f"**Current Total Value:** {current_total_value:,.2f}")
-                st.write(f"**Contribution Ratio:** {ratio:.4%}")
-                st.write(f"**Monthly Contribution Rate:** {monthly_rate:,.2f}")
-                st.write(f"**Target Amount:** {target_amount:,.2f}")
-                st.write(f"**General Total Start Value:** {projection_start_value:,.2f}")
-                st.write(f"**Estimated Time to Reach Target:** {time_to_target_text}")
+                selected = st.selectbox("Select contribution to edit", ledger["label"])
+                selected_id = selected.split("|")[0].replace("ID", "").strip()
+                row = ledger[ledger["id"].astype(str) == str(selected_id)].iloc[0]
 
-                st.dataframe(display_ledger, width="stretch")
+                with st.form("edit_contribution"):
+                    new_amount = st.number_input("Amount", value=float(row["amount"]), min_value=1.0)
+                    new_date = st.date_input("Date", value=row["date"])
+                    save = st.form_submit_button("Update Contribution")
 
-                pdf = generate_unified_pdf(
-                    m["member_id"],
-                    m["name"],
-                    ledger,
-                    ratio,
-                    projection_monthly_rate,
-                    projection_target_amount,
-                    grand_total
-                )
-                st.download_button(
-                    "Download Member Statement (PDF)",
-                    pdf,
-                    f"statement_{m['member_id']}.pdf",
-                    "application/pdf"
-                )
-
-                if st.session_state.role == "super_admin":
-                    ledger = ledger.copy()
-                    ledger["label"] = ledger.apply(
-                        lambda r: f"ID {r['id']} | {r['date']} | {r['amount']:,.2f}",
-                        axis=1
-                    )
-
-                    selected = st.selectbox("Select contribution to edit", ledger["label"])
-                    selected_id = selected.split("|")[0].replace("ID", "").strip()
-                    row = ledger[ledger["id"].astype(str) == str(selected_id)].iloc[0]
-
-                    with st.form("edit_contribution"):
-                        new_amount = st.number_input("Amount", value=float(row["amount"]), min_value=1.0)
-                        new_date = st.date_input("Date", value=row["date"])
-                        save = st.form_submit_button("Update Contribution")
-
-                        if save:
-                            update_contribution(selected_id, new_amount, new_date)
-                            st.success("Contribution updated successfully")
-                            st.rerun()
-            else:
-                st.info("This member has no contributions yet")
+                    if save:
+                        update_contribution(selected_id, new_amount, new_date)
+                        st.success("Contribution updated successfully")
+                        st.rerun()
         else:
-            st.warning("You are only allowed to view your own statement")
+            st.info("This member has no contributions yet")
     else:
         st.warning("No matching member found")
 
 # ------------------------------------------
 # GENERATE ALL MEMBER STATEMENTS
 # ------------------------------------------
-if st.session_state.role == "super_admin":
-    st.subheader("Generate All Member Statements")
-    if st.button("Generate All Member Statements") and not members_df.empty:
-        for member_id, data in member_data.items():
-            ratio = data["total_value"] / grand_total if grand_total else 0.0
-            pdf = generate_unified_pdf(
-                member_id,
-                data["name"],
-                data["ledger"],
-                ratio,
-                projection_monthly_rate,
-                projection_target_amount,
-                grand_total
-            )
+st.subheader("Generate All Member Statements")
+if st.button("Generate All Member Statements") and not members_df.empty:
+    for member_id, data in member_data.items():
+        ratio = data["total_value"] / grand_total if grand_total else 0.0
+        pdf = generate_unified_pdf(
+            member_id,
+            data["name"],
+            data["ledger"],
+            ratio,
+            projection_monthly_rate,
+            projection_target_amount,
+            grand_total
+        )
 
-            st.download_button(
-                f"Download Statement – {data['name']}",
-                pdf,
-                f"statement_{member_id}.pdf",
-                "application/pdf"
-            )
+        st.download_button(
+            f"Download Statement – {data['name']}",
+            pdf,
+            f"statement_{member_id}.pdf",
+            "application/pdf"
+        )
 
-        st.success("All statements generated successfully")
+    st.success("All statements generated successfully")
