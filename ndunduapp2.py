@@ -32,6 +32,26 @@ def get_supabase():
 supabase = get_supabase()
 
 # ==========================================
+# AUTH / SESSION
+# ==========================================
+def init_session():
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+    if "role" not in st.session_state:
+        st.session_state.role = None
+    if "member_id" not in st.session_state:
+        st.session_state.member_id = None
+    if "member_name" not in st.session_state:
+        st.session_state.member_name = None
+
+def logout():
+    st.session_state.authenticated = False
+    st.session_state.role = None
+    st.session_state.member_id = None
+    st.session_state.member_name = None
+    st.rerun()
+
+# ==========================================
 # BUSINESS LOGIC
 # ==========================================
 def compute_interest(amount, date):
@@ -146,17 +166,18 @@ def fetch_contributions(member_id=None):
     df = pd.DataFrame(res.data) if res.data else pd.DataFrame(columns=["id", "member_id", "amount", "date"])
     if not df.empty:
         df["date"] = pd.to_datetime(df["date"]).dt.date
+        df["member_id"] = df["member_id"].astype(str)
     return df
 
 def add_member(member_id, name):
     supabase.table("members").insert({
-        "member_id": member_id,
+        "member_id": str(member_id),
         "name": name.strip()
     }).execute()
 
 def add_contribution(member_id, amount, date):
     supabase.table("contributions").insert({
-        "member_id": member_id,
+        "member_id": str(member_id),
         "amount": amount,
         "date": date.isoformat()
     }).execute()
@@ -339,224 +360,317 @@ def generate_unified_pdf(
     return BytesIO(pdf.output(dest="S").encode("latin1"))
 
 # ==========================================
+# LOGIN SCREEN
+# ==========================================
+def login_screen():
+    st.title("Member Contribution & Interest App")
+    st.subheader("Login")
+
+    login_type = st.radio("Login as", ["Member", "Super Admin"], horizontal=True)
+
+    if login_type == "Super Admin":
+        with st.form("admin_login"):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            submit = st.form_submit_button("Login")
+
+            if submit:
+                if (
+                    username == st.secrets["ADMIN_USERNAME"]
+                    and password == st.secrets["ADMIN_PASSWORD"]
+                ):
+                    st.session_state.authenticated = True
+                    st.session_state.role = "super_admin"
+                    st.session_state.member_id = None
+                    st.session_state.member_name = None
+                    st.rerun()
+                else:
+                    st.error("Invalid admin credentials")
+
+    else:
+        members_df = fetch_members()
+
+        with st.form("member_login"):
+            member_id = st.text_input("Member ID")
+            password = st.text_input("Password", type="password")
+            submit = st.form_submit_button("Login")
+
+            if submit:
+                if not member_id or not password:
+                    st.error("Member ID and password are required")
+                elif password != st.secrets["MEMBER_ACCESS_PASSWORD"]:
+                    st.error("Invalid member credentials")
+                else:
+                    match = members_df[members_df["member_id"].astype(str) == str(member_id)]
+                    if match.empty:
+                        st.error("Member not found")
+                    else:
+                        member = match.iloc[0]
+                        st.session_state.authenticated = True
+                        st.session_state.role = "member"
+                        st.session_state.member_id = str(member["member_id"])
+                        st.session_state.member_name = str(member["name"])
+                        st.rerun()
+
+# ==========================================
 # STREAMLIT UI
 # ==========================================
+init_session()
+
+if not st.session_state.authenticated:
+    login_screen()
+    st.stop()
+
 st.title("Member Contribution & Interest App")
 
+top_col1, top_col2 = st.columns([4, 1])
+with top_col1:
+    if st.session_state.role == "super_admin":
+        st.caption("Logged in as: Super Admin")
+    else:
+        st.caption(f"Logged in as: Member ({st.session_state.member_name})")
+
+with top_col2:
+    if st.button("Logout"):
+        logout()
+
 members_df = fetch_members()
+if not members_df.empty:
+    members_df["member_id"] = members_df["member_id"].astype(str)
+
 contributions_df = fetch_contributions()
 member_data, grand_total = compute_all_member_totals(members_df, contributions_df)
 
 # ------------------------------------------
 # PROJECTION SETTINGS
 # ------------------------------------------
-st.subheader("Projection Settings")
+if st.session_state.role == "super_admin":
+    st.subheader("Projection Settings")
 
-col1, col2 = st.columns(2)
+    col1, col2 = st.columns(2)
 
-with col1:
-    projection_monthly_rate = st.number_input(
-        "Monthly Contribution Rate",
-        min_value=0.0,
-        value=float(MONTHLY_CONTRIBUTION_RATE),
-        step=100.0,
-        format="%.2f"
-    )
+    with col1:
+        projection_monthly_rate = st.number_input(
+            "Monthly Contribution Rate",
+            min_value=0.0,
+            value=float(MONTHLY_CONTRIBUTION_RATE),
+            step=100.0,
+            format="%.2f"
+        )
 
-with col2:
-    projection_target_amount = st.number_input(
-        "Target Amount",
-        min_value=0.0,
-        value=float(TARGET_AMOUNT),
-        step=1000.0,
-        format="%.2f"
-    )
+    with col2:
+        projection_target_amount = st.number_input(
+            "Target Amount",
+            min_value=0.0,
+            value=float(TARGET_AMOUNT),
+            step=1000.0,
+            format="%.2f"
+        )
+else:
+    projection_monthly_rate = float(MONTHLY_CONTRIBUTION_RATE)
+    projection_target_amount = float(TARGET_AMOUNT)
 
 # ------------------------------------------
 # ADD MEMBER
 # ------------------------------------------
-st.subheader("Add Member")
-with st.form("add_member"):
-    member_id = st.text_input("Member ID")
-    name = st.text_input("Name")
-    submit = st.form_submit_button("Add Member")
+if st.session_state.role == "super_admin":
+    st.subheader("Add Member")
+    with st.form("add_member"):
+        member_id = st.text_input("Member ID")
+        name = st.text_input("Name")
+        submit = st.form_submit_button("Add Member")
 
-    if submit:
-        if not member_id or not name:
-            st.error("All fields required")
-        else:
-            try:
-                add_member(member_id, name)
-                st.success(f"Member '{name}' added")
-                st.rerun()
-            except Exception:
-                st.error("Member ID already exists")
+        if submit:
+            if not member_id or not name:
+                st.error("All fields required")
+            else:
+                try:
+                    add_member(member_id, name)
+                    st.success(f"Member '{name}' added")
+                    st.rerun()
+                except Exception:
+                    st.error("Member ID already exists")
 
 # ------------------------------------------
 # ADD CONTRIBUTION
 # ------------------------------------------
-st.subheader("Add Contribution")
-if not members_df.empty:
-    with st.form("add_contribution"):
-        member_options = [f"{r['member_id']} - {r['name']}" for _, r in members_df.iterrows()]
-        selected = st.selectbox("Select Member", member_options)
-        c_member_id, c_member_name = selected.split(" - ", 1)
+if st.session_state.role == "super_admin":
+    st.subheader("Add Contribution")
+    if not members_df.empty:
+        with st.form("add_contribution"):
+            member_options = [f"{r['member_id']} - {r['name']}" for _, r in members_df.iterrows()]
+            selected = st.selectbox("Select Member", member_options)
+            c_member_id, c_member_name = selected.split(" - ", 1)
 
-        amount = st.number_input("Amount", min_value=1.0)
-        date = st.date_input("Date")
-        submit_c = st.form_submit_button("Add Contribution")
+            amount = st.number_input("Amount", min_value=1.0)
+            date = st.date_input("Date")
+            submit_c = st.form_submit_button("Add Contribution")
 
-        if submit_c:
-            add_contribution(c_member_id, amount, date)
-            st.success(f"Contribution added for {c_member_name}")
-            st.rerun()
-else:
-    st.info("Add members first")
+            if submit_c:
+                add_contribution(c_member_id, amount, date)
+                st.success(f"Contribution added for {c_member_name}")
+                st.rerun()
+    else:
+        st.info("Add members first")
 
 # ------------------------------------------
 # CONTRIBUTION SUMMARY
 # ------------------------------------------
-st.subheader("Contribution Summary (Including Interest)")
-if not contributions_df.empty:
-    summary = contributions_df.merge(members_df, on="member_id", how="left")
-    summary["Interest"] = summary.apply(lambda r: compute_interest(r["amount"], r["date"]), axis=1)
-    summary["Total Value"] = summary["amount"] + summary["Interest"]
+if st.session_state.role == "super_admin":
+    st.subheader("Contribution Summary (Including Interest)")
+    if not contributions_df.empty:
+        summary = contributions_df.merge(members_df, on="member_id", how="left")
+        summary["Interest"] = summary.apply(lambda r: compute_interest(r["amount"], r["date"]), axis=1)
+        summary["Total Value"] = summary["amount"] + summary["Interest"]
 
-    display_summary = summary[
-        ["member_id", "name", "date", "amount", "Interest", "Total Value"]
-    ].rename(columns={
-        "member_id": "Member ID",
-        "name": "Member Name",
-        "date": "Date",
-        "amount": "Principal"
-    })
+        display_summary = summary[
+            ["member_id", "name", "date", "amount", "Interest", "Total Value"]
+        ].rename(columns={
+            "member_id": "Member ID",
+            "name": "Member Name",
+            "date": "Date",
+            "amount": "Principal"
+        })
 
-    for col in ["Principal", "Interest", "Total Value"]:
-        display_summary[col] = display_summary[col].map(lambda x: f"{x:,.2f}")
+        for col in ["Principal", "Interest", "Total Value"]:
+            display_summary[col] = display_summary[col].map(lambda x: f"{x:,.2f}")
 
-    st.dataframe(display_summary, width="stretch")
-    st.metric("Total Principal", f"{summary['amount'].sum():,.2f}")
-    st.metric("Total Interest", f"{summary['Interest'].sum():,.2f}")
-    st.metric("Grand Total", f"{summary['Total Value'].sum():,.2f}")
-else:
-    st.info("No contributions yet")
+        st.dataframe(display_summary, width="stretch")
+        st.metric("Total Principal", f"{summary['amount'].sum():,.2f}")
+        st.metric("Total Interest", f"{summary['Interest'].sum():,.2f}")
+        st.metric("Grand Total", f"{summary['Total Value'].sum():,.2f}")
+    else:
+        st.info("No contributions yet")
 
 # ------------------------------------------
 # MEMBER STATEMENT
 # ------------------------------------------
 st.subheader("Member Statement")
-search = st.text_input("Search by Member ID or Name")
+
+if st.session_state.role == "super_admin":
+    search = st.text_input("Search by Member ID or Name")
+else:
+    search = st.session_state.member_id
+    st.info(f"Viewing statement for: {st.session_state.member_name} ({st.session_state.member_id})")
 
 if search and not members_df.empty:
     match = members_df[
-        members_df["member_id"].astype(str).str.contains(search, case=False, na=False) |
-        members_df["name"].astype(str).str.contains(search, case=False, na=False)
+        members_df["member_id"].astype(str).str.contains(str(search), case=False, na=False) |
+        members_df["name"].astype(str).str.contains(str(search), case=False, na=False)
     ]
 
     if not match.empty:
-        m = match.iloc[0]
-        ledger = prepare_member_ledger(m["member_id"], contributions_df)
+        if st.session_state.role == "member":
+            match = match[match["member_id"].astype(str) == st.session_state.member_id]
 
-        if not ledger.empty:
-            display_ledger = ledger[
-                ["date", "amount", "Interest", "Total Value", "Running Balance"]
-            ].rename(columns={
-                "date": "Date",
-                "amount": "Principal"
-            }).copy()
+        if not match.empty:
+            m = match.iloc[0]
+            ledger = prepare_member_ledger(str(m["member_id"]), contributions_df)
 
-            for col in ["Principal", "Interest", "Total Value", "Running Balance"]:
-                display_ledger[col] = display_ledger[col].map(lambda x: f"{x:,.2f}")
+            if not ledger.empty:
+                display_ledger = ledger[
+                    ["date", "amount", "Interest", "Total Value", "Running Balance"]
+                ].rename(columns={
+                    "date": "Date",
+                    "amount": "Principal"
+                }).copy()
 
-            principal, interest, current_total_value = compute_member_totals(ledger)
-            ratio = current_total_value / grand_total if grand_total else 0.0
+                for col in ["Principal", "Interest", "Total Value", "Running Balance"]:
+                    display_ledger[col] = display_ledger[col].map(lambda x: f"{x:,.2f}")
 
-            monthly_rate = projection_monthly_rate
-            target_amount = projection_target_amount
-            projection_start_value = grand_total
+                principal, interest, current_total_value = compute_member_totals(ledger)
+                ratio = current_total_value / grand_total if grand_total else 0.0
 
-            time_to_target = project_time_to_target(
-                current_value=projection_start_value,
-                monthly_contribution=monthly_rate,
-                target_amount=target_amount
-            )
-            time_to_target_text = format_time_to_target(time_to_target)
+                monthly_rate = projection_monthly_rate
+                target_amount = projection_target_amount
+                projection_start_value = grand_total
 
-            st.write(f"**Member Name:** {m['name']}")
-            st.write(f"**Member ID:** {m['member_id']}")
-            st.write(f"**Total Principal:** {principal:,.2f}")
-            st.write(f"**Total Interest:** {interest:,.2f}")
-            st.write(f"**Current Total Value:** {current_total_value:,.2f}")
-            st.write(f"**Contribution Ratio:** {ratio:.4%}")
-            st.write(f"**Monthly Contribution Rate:** {monthly_rate:,.2f}")
-            st.write(f"**Target Amount:** {target_amount:,.2f}")
-            st.write(f"**General Total Start Value:** {projection_start_value:,.2f}")
-            st.write(f"**Estimated Time to Reach Target:** {time_to_target_text}")
+                time_to_target = project_time_to_target(
+                    current_value=projection_start_value,
+                    monthly_contribution=monthly_rate,
+                    target_amount=target_amount
+                )
+                time_to_target_text = format_time_to_target(time_to_target)
 
-            st.dataframe(display_ledger, width="stretch")
+                st.write(f"**Member Name:** {m['name']}")
+                st.write(f"**Member ID:** {m['member_id']}")
+                st.write(f"**Total Principal:** {principal:,.2f}")
+                st.write(f"**Total Interest:** {interest:,.2f}")
+                st.write(f"**Current Total Value:** {current_total_value:,.2f}")
+                st.write(f"**Contribution Ratio:** {ratio:.4%}")
+                st.write(f"**Monthly Contribution Rate:** {monthly_rate:,.2f}")
+                st.write(f"**Target Amount:** {target_amount:,.2f}")
+                st.write(f"**General Total Start Value:** {projection_start_value:,.2f}")
+                st.write(f"**Estimated Time to Reach Target:** {time_to_target_text}")
 
-            pdf = generate_unified_pdf(
-                m["member_id"],
-                m["name"],
-                ledger,
-                ratio,
-                projection_monthly_rate,
-                projection_target_amount,
-                grand_total
-            )
-            st.download_button(
-                "Download Member Statement (PDF)",
-                pdf,
-                f"statement_{m['member_id']}.pdf",
-                "application/pdf"
-            )
+                st.dataframe(display_ledger, width="stretch")
 
-            ledger = ledger.copy()
-            ledger["label"] = ledger.apply(
-                lambda r: f"ID {r['id']} | {r['date']} | {r['amount']:,.2f}",
-                axis=1
-            )
+                pdf = generate_unified_pdf(
+                    m["member_id"],
+                    m["name"],
+                    ledger,
+                    ratio,
+                    projection_monthly_rate,
+                    projection_target_amount,
+                    grand_total
+                )
+                st.download_button(
+                    "Download Member Statement (PDF)",
+                    pdf,
+                    f"statement_{m['member_id']}.pdf",
+                    "application/pdf"
+                )
 
-            selected = st.selectbox("Select contribution to edit", ledger["label"])
-            selected_id = selected.split("|")[0].replace("ID", "").strip()
-            row = ledger[ledger["id"].astype(str) == str(selected_id)].iloc[0]
+                if st.session_state.role == "super_admin":
+                    ledger = ledger.copy()
+                    ledger["label"] = ledger.apply(
+                        lambda r: f"ID {r['id']} | {r['date']} | {r['amount']:,.2f}",
+                        axis=1
+                    )
 
-            with st.form("edit_contribution"):
-                new_amount = st.number_input("Amount", value=float(row["amount"]), min_value=1.0)
-                new_date = st.date_input("Date", value=row["date"])
-                save = st.form_submit_button("Update Contribution")
+                    selected = st.selectbox("Select contribution to edit", ledger["label"])
+                    selected_id = selected.split("|")[0].replace("ID", "").strip()
+                    row = ledger[ledger["id"].astype(str) == str(selected_id)].iloc[0]
 
-                if save:
-                    update_contribution(selected_id, new_amount, new_date)
-                    st.success("Contribution updated successfully")
-                    st.rerun()
+                    with st.form("edit_contribution"):
+                        new_amount = st.number_input("Amount", value=float(row["amount"]), min_value=1.0)
+                        new_date = st.date_input("Date", value=row["date"])
+                        save = st.form_submit_button("Update Contribution")
+
+                        if save:
+                            update_contribution(selected_id, new_amount, new_date)
+                            st.success("Contribution updated successfully")
+                            st.rerun()
+            else:
+                st.info("This member has no contributions yet")
         else:
-            st.info("This member has no contributions yet")
+            st.warning("You are only allowed to view your own statement")
     else:
         st.warning("No matching member found")
 
 # ------------------------------------------
 # GENERATE ALL MEMBER STATEMENTS
 # ------------------------------------------
-st.subheader("Generate All Member Statements")
-if st.button("Generate All Member Statements") and not members_df.empty:
-    for member_id, data in member_data.items():
-        ratio = data["total_value"] / grand_total if grand_total else 0.0
-        pdf = generate_unified_pdf(
-            member_id,
-            data["name"],
-            data["ledger"],
-            ratio,
-            projection_monthly_rate,
-            projection_target_amount,
-            grand_total
-        )
+if st.session_state.role == "super_admin":
+    st.subheader("Generate All Member Statements")
+    if st.button("Generate All Member Statements") and not members_df.empty:
+        for member_id, data in member_data.items():
+            ratio = data["total_value"] / grand_total if grand_total else 0.0
+            pdf = generate_unified_pdf(
+                member_id,
+                data["name"],
+                data["ledger"],
+                ratio,
+                projection_monthly_rate,
+                projection_target_amount,
+                grand_total
+            )
 
-        st.download_button(
-            f"Download Statement – {data['name']}",
-            pdf,
-            f"statement_{member_id}.pdf",
-            "application/pdf"
-        )
+            st.download_button(
+                f"Download Statement – {data['name']}",
+                pdf,
+                f"statement_{member_id}.pdf",
+                "application/pdf"
+            )
 
-    st.success("All statements generated successfully")
+        st.success("All statements generated successfully")
